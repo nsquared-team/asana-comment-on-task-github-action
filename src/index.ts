@@ -121,6 +121,7 @@ console.log("1\n")
       console.log("0 hiiii\n")
     // Check if Automated CI Testing
     if (prSynchronize || prPush) {
+      console.log(prSynchronize, prPush);
       const html_action_url = `<body> <a href='${action_url}'> Click Here To Investigate Action </a> </body>`
       for (const id of asanaTasksIds!) {
         const approvalSubtask = await getApprovalSubtask(id, true, ottoObj, ottoObj);

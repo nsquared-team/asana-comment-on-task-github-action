@@ -13365,6 +13365,7 @@ const run = () => __awaiter(void 0, void 0, void 0, function* () {
         console.log("0 hiiii\n");
         // Check if Automated CI Testing
         if (prSynchronize || prPush) {
+            console.log(prSynchronize, prPush);
             const html_action_url = `<body> <a href='${action_url}'> Click Here To Investigate Action </a> </body>`;
             for (const id of asanaTasksIds) {
                 const approvalSubtask = yield getApprovalSubtask(id, true, ottoObj, ottoObj);
