@@ -19,8 +19,8 @@ export const run = async () => {
     utils.validateTrigger(eventName);
     utils.validateProjectLists(allowedProjects, blockedProjects);
 
-    console.log("context.payload", context.payload);
-
+    // console.log("context.payload", context.payload);
+console.log("heyyy yo?\n")
     // Store Constant Values
     const ci_status = getInput(INPUTS.COMMENT_TEXT);
     const action_url = getInput(INPUTS.ACTION_URL);
