@@ -535,6 +535,8 @@ export const moveTaskToSection = async (
   moveSection: String,
   donotMoveSections?: Array<String>
 ) => {
+  console.log("logging moveTaskToSection arguments now")
+  console.log(id, moveSection, donotMoveSections);
   // Get Task
   const taskUrl = `${REQUESTS.TASKS_URL}${id}`;
   const task = await asanaAxios.get(taskUrl).then((response) => response.data.data);
