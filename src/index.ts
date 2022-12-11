@@ -83,7 +83,7 @@ export const run = async () => {
     // Store Requested Reviewers
     const requestedReviewers =
       context.payload.pull_request?.requested_reviewers || [];
-
+      console.log("0\n")
     let requestedReviewersObjs: any = [];
     for (const reviewer of requestedReviewers) {
       const reviewerObj = users.find(
@@ -99,7 +99,7 @@ export const run = async () => {
     // Add User to Followers
     const followersStatus = [];
     const followers = [userObj?.asanaId];
-
+console.log("1\n")
     // Add Requested Reviewers to Followers
     for (const reviewer of !PEER_DEV_requestedReviewersObjs.length ? (!DEV_requestedReviewersObjs.length ? QA_requestedReviewersObjs : DEV_requestedReviewersObjs) : PEER_DEV_requestedReviewersObjs) {
       followers.push(reviewer?.asanaId);
@@ -183,7 +183,7 @@ export const run = async () => {
         commentBody = commentBody.replace(/</g, "");
       }
     }
-
+    console.log("3\n")
     // Get Images/Links and Attach Them 
     const links = commentBody.match(
       /\bhttps?:\/\/\S+[\w|\/]/gi
@@ -464,7 +464,7 @@ export const run = async () => {
         });
       }
     }
-
+    console.log("55\n")
     setOutput(`event`, eventName);
     setOutput(`action`, action);
 
