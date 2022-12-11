@@ -40,7 +40,7 @@ export const run = async () => {
       context.payload.comment?.html_url ||
       context.payload.review?.html_url ||
       "";
-
+      console.log("0 hey\n")
     // Store Conditions
     const prClosedMerged =
       eventName === "pull_request" &&
@@ -118,7 +118,7 @@ console.log("1\n")
         }
         return linkArray[linkArray.length - 1];
       }) || [];
-
+      console.log("0 hiiii\n")
     // Check if Automated CI Testing
     if (prSynchronize || prPush) {
       const html_action_url = `<body> <a href='${action_url}'> Click Here To Investigate Action </a> </body>`
@@ -163,7 +163,7 @@ console.log("1\n")
       }
       return;
     }
-
+    console.log("000 hhhh\n")
     // Get Arrows and Replace Them   
     let commentBody =
       context.payload.comment?.body || context.payload.review?.body || "";
