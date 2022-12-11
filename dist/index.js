@@ -13289,7 +13289,8 @@ const run = () => __awaiter(void 0, void 0, void 0, function* () {
         const action = github.context.payload.action;
         validateTrigger(eventName);
         validateProjectLists(allowedProjects, blockedProjects);
-        console.log("context.payload", github.context.payload);
+        // console.log("context.payload", context.payload);
+        console.log("heyyy yo?\n");
         // Store Constant Values
         const ci_status = (0,core.getInput)(COMMENT_TEXT);
         const action_url = (0,core.getInput)(ACTION_URL);
@@ -13304,6 +13305,7 @@ const run = () => __awaiter(void 0, void 0, void 0, function* () {
         const commentUrl = ((_m = github.context.payload.comment) === null || _m === void 0 ? void 0 : _m.html_url) ||
             ((_o = github.context.payload.review) === null || _o === void 0 ? void 0 : _o.html_url) ||
             "";
+        console.log("0 hey\n");
         // Store Conditions
         const prClosedMerged = eventName === "pull_request" &&
             action === "closed" &&
@@ -13333,6 +13335,7 @@ const run = () => __awaiter(void 0, void 0, void 0, function* () {
         const ottoObj = users.find((user) => user.githubName === "otto-bot-git");
         // Store Requested Reviewers
         const requestedReviewers = ((_u = github.context.payload.pull_request) === null || _u === void 0 ? void 0 : _u.requested_reviewers) || [];
+        console.log("0\n");
         let requestedReviewersObjs = [];
         for (const reviewer of requestedReviewers) {
             const reviewerObj = users.find((user) => user.githubName === reviewer.login);
@@ -13344,6 +13347,7 @@ const run = () => __awaiter(void 0, void 0, void 0, function* () {
         // Add User to Followers
         const followersStatus = [];
         const followers = [userObj === null || userObj === void 0 ? void 0 : userObj.asanaId];
+        console.log("1\n");
         // Add Requested Reviewers to Followers
         for (const reviewer of !PEER_DEV_requestedReviewersObjs.length ? (!DEV_requestedReviewersObjs.length ? QA_requestedReviewersObjs : DEV_requestedReviewersObjs) : PEER_DEV_requestedReviewersObjs) {
             followers.push(reviewer === null || reviewer === void 0 ? void 0 : reviewer.asanaId);
@@ -13358,6 +13362,7 @@ const run = () => __awaiter(void 0, void 0, void 0, function* () {
             }
             return linkArray[linkArray.length - 1];
         })) || [];
+        console.log("0 hiiii\n");
         // Check if Automated CI Testing
         if (prSynchronize || prPush) {
             const html_action_url = `<body> <a href='${action_url}'> Click Here To Investigate Action </a> </body>`;
@@ -13396,6 +13401,7 @@ const run = () => __awaiter(void 0, void 0, void 0, function* () {
             }
             return;
         }
+        console.log("000 hhhh\n");
         // Get Arrows and Replace Them   
         let commentBody = ((_v = github.context.payload.comment) === null || _v === void 0 ? void 0 : _v.body) || ((_w = github.context.payload.review) === null || _w === void 0 ? void 0 : _w.body) || "";
         const isReply = commentBody.charAt(0) === ">";
@@ -13413,6 +13419,7 @@ const run = () => __awaiter(void 0, void 0, void 0, function* () {
                 commentBody = commentBody.replace(/</g, "");
             }
         }
+        console.log("3\n");
         // Get Images/Links and Attach Them 
         const links = commentBody.match(/\bhttps?:\/\/\S+[\w|\/]/gi) || [];
         links.forEach((link) => {
@@ -13666,6 +13673,7 @@ const run = () => __awaiter(void 0, void 0, void 0, function* () {
                 });
             }
         }
+        console.log("55\n");
         (0,core.setOutput)(`event`, eventName);
         (0,core.setOutput)(`action`, action);
         (0,core.setOutput)(`followersStatus`, followersStatus);
@@ -13720,6 +13728,8 @@ const getAllApprovalSubtasks = (id, creator) => __awaiter(void 0, void 0, void 0
     return approvalSubtasks;
 });
 const moveTaskToSection = (id, moveSection, donotMoveSections) => __awaiter(void 0, void 0, void 0, function* () {
+    console.log("logging moveTaskToSection arguments now");
+    console.log(id, moveSection, donotMoveSections);
     // Get Task
     const taskUrl = `${TASKS_URL}${id}`;
     const task = yield requests_asanaAxios.get(taskUrl).then((response) => response.data.data);
