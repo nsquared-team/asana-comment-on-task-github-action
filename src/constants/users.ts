@@ -7,8 +7,8 @@ export const users = [
     team: "DEV",
   },
   {
-    asanaId: "11332651049773",
-    asanaUrlId: "11332651049782",
+    asanaId: "1208102635655720",
+    asanaUrlId: "11332651049781",
     asanaName: "Natalie MacLees",
     githubName: "NatalieMac",
     team: "DEV",
