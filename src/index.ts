@@ -624,7 +624,7 @@ export const addRequestedReview = async (
     return;
   }
 
-  const action_url = pull_request_url + "/files"
+  const action_url = pull_request_url
   const task_notes = `<a href='${action_url}'> Click Here To Start Your Review </a>`
   addApprovalTask(id, reviewer, "Review", "pending", task_notes);
 }
