@@ -90,4 +90,11 @@ export const users = [
     githubName: "ola-smaha",
     team: "PEER_DEV",
   },
+  {
+  asanaId: "1208635532145769",
+  asanaUrlId: "1208635532145767",
+  asanaName: "Reine Fakih",
+  githubName: "reine-fakih",
+  team: "PEER_DEV",
+  }
 ];
