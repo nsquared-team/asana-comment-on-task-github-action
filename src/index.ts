@@ -596,6 +596,7 @@ export const run = async () => {
     commentText = commentText.replace(/\"/g, "");
     commentText = commentText.replace(/\'/g, "");
 
+    setOutput(`commentBody`, JSON.stringify(commentBody));
     setOutput(`event`, eventName);
     setOutput(`action`, action);
     setOutput(`followersStatus`, followersStatus);
