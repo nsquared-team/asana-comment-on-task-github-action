@@ -110,5 +110,5 @@ export const users = [
     asanaName: "Reine Fakih",
     githubName: "reinefakih",
     team: "PEER_DEV",
-  }
+  },
 ];

@@ -15175,6 +15175,27 @@ const users = [
         githubName: "ola-smaha",
         team: "PEER_DEV",
     },
+    {
+        asanaId: "1208635532145772",
+        asanaUrlId: "1208635532145770",
+        asanaName: "Joud Abi Haidar",
+        githubName: "joudabihaidar",
+        team: "PEER_DEV",
+    },
+    {
+        asanaId: "1208635695764740",
+        asanaUrlId: "1208635695764747",
+        asanaName: "Nibal Abd Al Baki",
+        githubName: "Nibalab",
+        team: "PEER_DEV",
+    },
+    {
+        asanaId: "1208635532145769",
+        asanaUrlId: "1208635532145767",
+        asanaName: "Reine Fakih",
+        githubName: "reinefakih",
+        team: "PEER_DEV",
+    },
 ];
 
 ;// CONCATENATED MODULE: ./src/requests/githubAxios.ts
@@ -15732,6 +15753,7 @@ const run = () => __awaiter(void 0, void 0, void 0, function* () {
         commentText = commentText.replace(/\>/g, "\\>");
         commentText = commentText.replace(/\"/g, "");
         commentText = commentText.replace(/\'/g, "");
+        (0,core.setOutput)(`commentBody`, JSON.stringify(commentBody));
         (0,core.setOutput)(`event`, eventName);
         (0,core.setOutput)(`action`, action);
         (0,core.setOutput)(`followersStatus`, followersStatus);
@@ -15755,7 +15777,7 @@ const addRequestedReview = (id, reviewer, pull_request_url) => __awaiter(void 0,
     if (approvalSubtask) {
         return;
     }
-    const action_url = pull_request_url + "/files";
+    const action_url = pull_request_url;
     const task_notes = `<a href='${action_url}'> Click Here To Start Your Review </a>`;
     addApprovalTask(id, reviewer, "Review", "pending", task_notes);
 });
