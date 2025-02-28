@@ -70,7 +70,7 @@ export const users = [
     team: "BOT",
   },
   {
-    asanaId: "1205721440476043",
+    asanaId: "1205721440476040",
     asanaUrlId: "1205721440967723",
     asanaName: "Majed habli",
     githubName: "Majed-Habli",
@@ -145,5 +145,5 @@ export const users = [
     asanaName: "Aref Abou Hamdan",
     githubName: "arefabouhamdan",
     team: "PEER_DEV",
-  }
+  },
 ];
