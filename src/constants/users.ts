@@ -70,13 +70,6 @@ export const users = [
     team: "BOT",
   },
   {
-    asanaId: "1205721440476040",
-    asanaUrlId: "1205721440967723",
-    asanaName: "Majed habli",
-    githubName: "Majed-Habli",
-    team: "PEER_DEV",
-  },
-  {
     asanaId: "1206733806093048",
     asanaUrlId: "1206733806093055",
     asanaName: "Zein Shhadi",
@@ -98,24 +91,10 @@ export const users = [
     team: "PEER_DEV",
   },
   {
-    asanaId: "1208635695764740",
-    asanaUrlId: "1208635695764747",
-    asanaName: "Nibal Abd Al Baki",
-    githubName: "Nibalab",
-    team: "PEER_DEV",
-  },
-  {
     asanaId: "1208635532145769",
     asanaUrlId: "1208635532145767",
     asanaName: "Reine Fakih",
     githubName: "reinefakih",
-    team: "PEER_DEV",
-  },
-  {
-    asanaId: "1208635532145766",
-    asanaUrlId: "1208635532145764",
-    asanaName: "Hazar El Itani",
-    githubName: "hazzUx",
     team: "PEER_DEV",
   },
   {
