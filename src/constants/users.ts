@@ -70,13 +70,6 @@ export const users = [
     team: "BOT",
   },
   {
-    asanaId: "1205721440476043",
-    asanaUrlId: "1205721440967723",
-    asanaName: "Majed habli",
-    githubName: "Majed-Habli",
-    team: "PEER_DEV",
-  },
-  {
     asanaId: "1206733806093048",
     asanaUrlId: "1206733806093055",
     asanaName: "Zein Shhadi",
@@ -98,13 +91,6 @@ export const users = [
     team: "PEER_DEV",
   },
   {
-    asanaId: "1208635695764740",
-    asanaUrlId: "1208635695764747",
-    asanaName: "Nibal Abd Al Baki",
-    githubName: "Nibalab",
-    team: "PEER_DEV",
-  },
-  {
     asanaId: "1208635532145769",
     asanaUrlId: "1208635532145767",
     asanaName: "Reine Fakih",
@@ -112,18 +98,11 @@ export const users = [
     team: "PEER_DEV",
   },
   {
-    asanaId: "1208635532145766",
-    asanaUrlId: "1208635532145764",
-    asanaName: "Hazar El Itani",
-    githubName: "hazzUx",
-    team: "PEER_DEV",
-  },
-  {
     asanaId: "1209360737248157",
     asanaUrlId: "1209360737268576",
     asanaName: "Tarek Alkhatib",
     githubName: "Tarek-Al-Khatib",
-    team: "PEER_DEV"
+    team: "PEER_DEV",
   },
   {
     asanaId: "1209360737339485",
@@ -145,5 +124,5 @@ export const users = [
     asanaName: "Aref Abou Hamdan",
     githubName: "arefabouhamdan",
     team: "PEER_DEV",
-  }
+  },
 ];
