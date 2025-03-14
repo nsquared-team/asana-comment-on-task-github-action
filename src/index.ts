@@ -122,13 +122,11 @@ export const run = async () => {
     );
     const asanaTasksIds =
       asanaTasksLinks?.map((link) => {
-        const linkArray = link.split("/");
-        if (isNaN(Number(linkArray[linkArray.length - 1]))) {
-          // Check If Link is Attached From Github or Asana
-          return linkArray[linkArray.length - 2];
-        }
-        return linkArray[linkArray.length - 1];
-      }) || [];
+        let taskNumberMatch = link?.match(/task\/(\d+)/);
+        return taskNumberMatch ? taskNumberMatch[1] : null
+      }).filter(id=>id) || [];
+    
+    console.log("asanaTasksIds", asanaTasksIds);
 
     // Check if Automated CI Testing
     if (prSynchronize || prPush) {
