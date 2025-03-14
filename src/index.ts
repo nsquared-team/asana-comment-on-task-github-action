@@ -19,7 +19,7 @@ export const run = async () => {
     utils.validateTrigger(eventName);
     utils.validateProjectLists(allowedProjects, blockedProjects);
 
-    console.log("context.payload", context.payload);
+    console.log("TEST published context.payload", context.payload);
 
     // Store Constant Values
     const today = new Date();
