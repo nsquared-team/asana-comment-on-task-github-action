@@ -126,6 +126,7 @@ export const run = async () => {
         return taskNumberMatch ? taskNumberMatch[1] : null
       }).filter(id=>id) || [];
 
+      console.log("asanaTasksIds", asanaTasksIds);
     // Check if Automated CI Testing
     if (prSynchronize || prPush) {
       if (ci_status === "edit_pr_description") {
