@@ -150,44 +150,50 @@ export const run = async () => {
 
       const task_notes = `<a href='${action_url}'> Click Here To Investigate Action </a>`
       for (const id of asanaTasksIds!) {
-        const approvalSubtask = await getApprovalSubtask(id, true, ottoObj);
-
-        // Check If Subtask Found
-        if (approvalSubtask) {
-
-          // Check If Subtask rejected -> approved
-          // Add Review Subtasks for PEER or DEV or QA
-          if (approvalSubtask.approval_status === "rejected" && ci_status === "approved") {
-            moveTaskToSection(id, SECTIONS.TESTING_REVIEW, [SECTIONS.APPROVED, SECTIONS.RELEASED_BETA, SECTIONS.RELEASED_PAID, SECTIONS.RELEASED_FREE]);
-            for (const reviewer of !PEER_DEV_requestedReviewersObjs.length ? (!DEV_requestedReviewersObjs.length ? QA_requestedReviewersObjs : DEV_requestedReviewersObjs) : PEER_DEV_requestedReviewersObjs) {
-              addRequestedReview(id, reviewer, pullRequestURL);
+        if(id) {
+          const approvalSubtask = await getApprovalSubtask(id, true, ottoObj);
+          // Check If Subtask Found
+          if (approvalSubtask) {
+  
+            // Check If Subtask rejected -> approved
+            // Add Review Subtasks for PEER or DEV or QA
+            if (approvalSubtask.approval_status === "rejected" && ci_status === "approved") {
+              moveTaskToSection(id, SECTIONS.TESTING_REVIEW, [SECTIONS.APPROVED, SECTIONS.RELEASED_BETA, SECTIONS.RELEASED_PAID, SECTIONS.RELEASED_FREE]);
+              for (const reviewer of !PEER_DEV_requestedReviewersObjs.length ? (!DEV_requestedReviewersObjs.length ? QA_requestedReviewersObjs : DEV_requestedReviewersObjs) : PEER_DEV_requestedReviewersObjs) {
+                addRequestedReview(id, reviewer, pullRequestURL);
+              }
             }
+  
+            // Check if Subtask approved -> rejected
+            // Delete All approval tasks and move to next
+            if (approvalSubtask.approval_status === "approved" && ci_status === "rejected") {
+              const approvalSubtasks = await getAllApprovalSubtasks(id, ottoObj);
+              deleteApprovalTasks(approvalSubtasks);
+              moveTaskToSection(id, SECTIONS.NEXT, [SECTIONS.IN_PROGRESS, SECTIONS.RELEASED_BETA, SECTIONS.RELEASED_PAID, SECTIONS.RELEASED_FREE]);
+            }
+  
+            await asanaAxios.put(`${REQUESTS.TASKS_URL}${approvalSubtask.gid}`, {
+              data: {
+                due_on: today.toISOString().substring(0, 10),
+                approval_status: ci_status,
+                html_notes: "<body>" + task_notes + "</body>"
+              },
+            });
+            continue;
           }
+        }
 
-          // Check if Subtask approved -> rejected
-          // Delete All approval tasks and move to next
-          if (approvalSubtask.approval_status === "approved" && ci_status === "rejected") {
+        console.log("ci_status", ci_status);
+        if (ci_status === "rejected") {
+          if (id) {
             const approvalSubtasks = await getAllApprovalSubtasks(id, ottoObj);
             deleteApprovalTasks(approvalSubtasks);
             moveTaskToSection(id, SECTIONS.NEXT, [SECTIONS.IN_PROGRESS, SECTIONS.RELEASED_BETA, SECTIONS.RELEASED_PAID, SECTIONS.RELEASED_FREE]);
           }
-
-          await asanaAxios.put(`${REQUESTS.TASKS_URL}${approvalSubtask.gid}`, {
-            data: {
-              due_on: today.toISOString().substring(0, 10),
-              approval_status: ci_status,
-              html_notes: "<body>" + task_notes + "</body>"
-            },
-          });
-          continue;
         }
-
-        if (ci_status === "rejected") {
-          const approvalSubtasks = await getAllApprovalSubtasks(id, ottoObj);
-          deleteApprovalTasks(approvalSubtasks);
-          moveTaskToSection(id, SECTIONS.NEXT, [SECTIONS.IN_PROGRESS, SECTIONS.RELEASED_BETA, SECTIONS.RELEASED_PAID, SECTIONS.RELEASED_FREE]);
+        if(id) {
+          addApprovalTask(id, ottoObj, "Automated CI Testing", ci_status, task_notes);
         }
-        addApprovalTask(id, ottoObj, "Automated CI Testing", ci_status, task_notes);
       }
       return;
     }
@@ -269,24 +275,30 @@ export const run = async () => {
     if (prMergeConflicts) {
       // Move Asana Task To Next Section and Mark Incomplete
       for (const id of asanaTasksIds!) {
-        moveTaskToSection(id, SECTIONS.NEXT, [SECTIONS.IN_PROGRESS, SECTIONS.RELEASED_BETA, SECTIONS.RELEASED_PAID, SECTIONS.RELEASED_FREE]);
-        await asanaAxios.put(`${REQUESTS.TASKS_URL}${id}`, {
-          data: {
-            completed: false,
-          },
-        });
+        if(id) {
+          moveTaskToSection(id, SECTIONS.NEXT, [SECTIONS.IN_PROGRESS, SECTIONS.RELEASED_BETA, SECTIONS.RELEASED_PAID, SECTIONS.RELEASED_FREE]);
+          await asanaAxios.put(`${REQUESTS.TASKS_URL}${id}`, {
+            data: {
+              completed: false,
+            },
+          });
+        }
       }
     }
 
     if (prReviewRequested || prReadyForReview) {
       // Move Tasks to Testing Review
       for (const id of asanaTasksIds!) {
-        moveTaskToSection(id, SECTIONS.TESTING_REVIEW);
+        if(id) {
+          moveTaskToSection(id, SECTIONS.TESTING_REVIEW);
+        }
       }
       // Create Approval Tasks For Reviewers
       for (const reviewer of !PEER_DEV_requestedReviewersObjs.length ? (!DEV_requestedReviewersObjs.length ? QA_requestedReviewersObjs : DEV_requestedReviewersObjs) : PEER_DEV_requestedReviewersObjs) {
         for (const id of asanaTasksIds!) {
-          addRequestedReview(id, reviewer, pullRequestURL);
+          if(id) {
+            addRequestedReview(id, reviewer, pullRequestURL);
+          }
         }
       }
 
@@ -295,22 +307,23 @@ export const run = async () => {
         for (const id of asanaTasksIds!) {
           // Get Duplicate Approval Tasks
           const isDuplicate: any = [];
-          const approvalSubtasks = await getAllApprovalSubtasks(id, ottoObj);
-          approvalSubtasks.reduce((counter: any, subtask: any) => {
-            isDuplicate[subtask.gid] = false
-            if (!subtask.completed) {
-              counter[subtask.assignee.gid] = ++counter[subtask.assignee.gid] || 0;
+          if(id) {
+            const approvalSubtasks = await getAllApprovalSubtasks(id, ottoObj);
+            approvalSubtasks.reduce((counter: any, subtask: any) => {
+              isDuplicate[subtask.gid] = false
+              if (!subtask.completed) {
+                counter[subtask.assignee.gid] = ++counter[subtask.assignee.gid] || 0;
+              }
+              if (counter[subtask.assignee.gid] > 0) {
+                isDuplicate[subtask.gid] = true
+              }
+              return counter;
+            }, {});
+            // Delete Approval Tasks
+            const duplicateApprovalSubtasks = approvalSubtasks.filter((subtask: any) => isDuplicate[subtask.gid])
+            if (duplicateApprovalSubtasks.length > 0) {
+              deleteApprovalTasks(duplicateApprovalSubtasks);
             }
-            if (counter[subtask.assignee.gid] > 0) {
-              isDuplicate[subtask.gid] = true
-            }
-            return counter;
-          }, {});
-
-          // Delete Approval Tasks
-          const duplicateApprovalSubtasks = approvalSubtasks.filter((subtask: any) => isDuplicate[subtask.gid])
-          if (duplicateApprovalSubtasks.length > 0) {
-            deleteApprovalTasks(duplicateApprovalSubtasks);
           }
         }
 
@@ -319,24 +332,25 @@ export const run = async () => {
 
     if (prReviewSubmitted) {
       for (const id of asanaTasksIds!) {
-        const approvalSubtask = await getApprovalSubtask(id, false, userObj);
-
-        // Update Approval Subtask Of User
-        if (approvalSubtask) {
-          // Get Correct State
-          let finalState = "";
-          if (prReviewCommented && reviewBody) {
-            finalState = "changes_requested";
-          } else if (acceptedReviewStates.includes(reviewState)) {
-            finalState = reviewState
-          }
-  
-          if (finalState) {
-            await asanaAxios.put(`${REQUESTS.TASKS_URL}${approvalSubtask.gid}`, {
-              data: {
-                approval_status: finalState,
-              },
-            });
+        if(id) {
+          const approvalSubtask = await getApprovalSubtask(id, false, userObj);
+          // Update Approval Subtask Of User
+          if (approvalSubtask) {
+            // Get Correct State
+            let finalState = "";
+            if (prReviewCommented && reviewBody) {
+              finalState = "changes_requested";
+            } else if (acceptedReviewStates.includes(reviewState)) {
+              finalState = reviewState
+            }
+    
+            if (finalState) {
+              await asanaAxios.put(`${REQUESTS.TASKS_URL}${approvalSubtask.gid}`, {
+                data: {
+                  approval_status: finalState,
+                },
+              });
+            }
           }
         }
       }
@@ -346,15 +360,17 @@ export const run = async () => {
     if (prClosedMerged) {
       setTimeout(async () => {
         for (const id of asanaTasksIds!) {
-          const approvalSubtasks = await getAllApprovalSubtasks(id, ottoObj);
-          deleteApprovalTasks(approvalSubtasks);
-          moveTaskToSection(id, pullRequestBaseBranch !== "master" ? SECTIONS.DONE : SECTIONS.RELEASED_BETA);
-          if (pullRequestBaseBranch !== "master") {
-            await asanaAxios.put(`${REQUESTS.TASKS_URL}${id}`, {
-              data: {
-                completed: true,
-              },
-            });
+          if(id) {
+            const approvalSubtasks = await getAllApprovalSubtasks(id, ottoObj);
+            deleteApprovalTasks(approvalSubtasks);
+            moveTaskToSection(id, pullRequestBaseBranch !== "master" ? SECTIONS.DONE : SECTIONS.RELEASED_BETA);
+            if (pullRequestBaseBranch !== "master") {
+              await asanaAxios.put(`${REQUESTS.TASKS_URL}${id}`, {
+                data: {
+                  completed: true,
+                },
+              });
+            }
           }
         }
       }, 60000);
@@ -364,14 +380,16 @@ export const run = async () => {
     if (prReviewChangesRequested) {
       setTimeout(async () => {
         for (const id of asanaTasksIds!) {
-          const approvalSubtasks = await getAllApprovalSubtasks(id, ottoObj);
-          deleteApprovalTasks(approvalSubtasks);
-          moveTaskToSection(id, SECTIONS.NEXT);
-          await asanaAxios.put(`${REQUESTS.TASKS_URL}${id}`, {
-            data: {
-              completed: false,
-            },
-          });
+          if(id) {
+            const approvalSubtasks = await getAllApprovalSubtasks(id, ottoObj);
+            deleteApprovalTasks(approvalSubtasks);
+            moveTaskToSection(id, SECTIONS.NEXT);
+            await asanaAxios.put(`${REQUESTS.TASKS_URL}${id}`, {
+              data: {
+                completed: false,
+              },
+            });
+          }
         }
       }, 60000);
     }
@@ -380,12 +398,14 @@ export const run = async () => {
     if (prReviewCommented) {
       setTimeout(async () => {
         for (const id of asanaTasksIds!) {
-          moveTaskToSection(id, SECTIONS.NEXT);
-          await asanaAxios.put(`${REQUESTS.TASKS_URL}${id}`, {
-            data: {
-              completed: false,
-            },
-          });
+          if(id) {
+            moveTaskToSection(id, SECTIONS.NEXT);
+            await asanaAxios.put(`${REQUESTS.TASKS_URL}${id}`, {
+              data: {
+                completed: false,
+              },
+            });
+          }
         }
       }, 60000);
     }
@@ -448,7 +468,9 @@ export const run = async () => {
         DEV_requestedReviewersObjs.forEach(async (reviewer: any) => {
           followers.push(reviewer?.asanaId);
           for (const id of asanaTasksIds!) {
-            addRequestedReview(id, reviewer, pullRequestURL);
+            if(id) {
+              addRequestedReview(id, reviewer, pullRequestURL);
+            }
           }
         });
       }
@@ -458,7 +480,9 @@ export const run = async () => {
         QA_requestedReviewersObjs.forEach(async (reviewer: any) => {
           followers.push(reviewer?.asanaId);
           for (const id of asanaTasksIds!) {
-            addRequestedReview(id, reviewer, pullRequestURL);
+            if(id) {
+              addRequestedReview(id, reviewer, pullRequestURL);
+            }
           }
         });
       }
@@ -466,7 +490,9 @@ export const run = async () => {
       // Check If Should Move To Approved
       if (is_approved_by_peer && is_approved_by_dev && is_approved_by_qa) {
         for (const id of asanaTasksIds!) {
-          moveTaskToSection(id, SECTIONS.APPROVED);
+          if(id) {
+            moveTaskToSection(id, SECTIONS.APPROVED);
+          }
         }
       }
 

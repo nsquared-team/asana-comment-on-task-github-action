@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "es2016",
     "module": "commonjs",
-    "outDir": "./lib",
+    // "outDir": "./lib",
     "rootDir": "./src",
     "strict": true,
     "noImplicitAny": true,
