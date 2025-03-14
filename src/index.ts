@@ -19,7 +19,7 @@ export const run = async () => {
     utils.validateTrigger(eventName);
     utils.validateProjectLists(allowedProjects, blockedProjects);
 
-    console.log("TEST published context.payload", context.payload);
+    console.log("context.payload", context.payload);
 
     // Store Constant Values
     const today = new Date();
@@ -126,7 +126,6 @@ export const run = async () => {
         return taskNumberMatch ? taskNumberMatch[1] : null
       }).filter(id=>id) || [];
 
-      console.log("asanaTasksIds", asanaTasksIds);
     // Check if Automated CI Testing
     if (prSynchronize || prPush) {
       if (ci_status === "edit_pr_description") {
