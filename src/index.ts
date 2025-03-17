@@ -122,9 +122,17 @@ export const run = async () => {
     );
     const asanaTasksIds =
       asanaTasksLinks?.map((link) => {
-        let taskNumberMatch = link?.match(/task\/(\d+)/);
-        return taskNumberMatch ? taskNumberMatch[1] : null
-      }).filter(id=>id) || [];
+        let taskNumberMatch = link?.match(/task\/(\d+)|\/\d+\/(\d+)\/f/);
+        if(taskNumberMatch) {
+          if(taskNumberMatch[1]) {
+              return taskNumberMatch[1];
+          }
+          if(taskNumberMatch[2]) {
+              return taskNumberMatch[2];
+          }
+        }
+        return null;
+    }).filter(id=>id) || [];
     
     console.log("asanaTasksIds", asanaTasksIds);
 
