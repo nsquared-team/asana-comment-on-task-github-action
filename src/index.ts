@@ -702,13 +702,23 @@ export const deleteApprovalTasks = async (
   for (const subtask of approvalSubtasks) {
     try {
       await asanaAxios.delete(`${REQUESTS.TASKS_URL}${subtask.gid}`);
+      info(`Successfully deleted approval task: ${subtask.gid}`);
     } catch (error) {
       if (utils.isAxiosError(error)) {
-        console.log(error.response);
-        console.log(error.response?.data || "Unknown error");
+        // Handle 404 errors - task might already be deleted
+        if (error.response?.status === 404) {
+          info(`Approval task ${subtask.gid} already deleted or not found - skipping`);
+          continue;
+        }
+        
+        // Log other HTTP errors but don't fail the entire action
+        console.warn(`Failed to delete approval task ${subtask.gid}:`, error.response?.data || "Unknown error");
+        console.log("Full error response:", error.response);
+      } else if (error instanceof Error) {
+        console.warn(`Error deleting approval task ${subtask.gid}: ${error.message}`);
+      } else {
+        console.warn(`Unknown error deleting approval task ${subtask.gid}:`, error);
       }
-      if (error instanceof Error) setFailed(error.message);
-      else setFailed("Unknown error");
     }
   }
 }
