@@ -16006,21 +16006,30 @@ const cleanupApprovalTasks = (id) => __awaiter(void 0, void 0, void 0, function*
     }
 });
 const deleteApprovalTasks = (approvalSubtasks) => __awaiter(void 0, void 0, void 0, function* () {
-    var _4;
+    var _4, _5;
     // Delete Approval Tasks
     for (const subtask of approvalSubtasks) {
         try {
             yield _requests_asanaAxios__WEBPACK_IMPORTED_MODULE_4___default().delete(`${_constants_requests__WEBPACK_IMPORTED_MODULE_5__.TASKS_URL}${subtask.gid}`);
+            (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.info)(`Successfully deleted approval task: ${subtask.gid}`);
         }
         catch (error) {
             if (_utils__WEBPACK_IMPORTED_MODULE_2__.isAxiosError(error)) {
-                console.log(error.response);
-                console.log(((_4 = error.response) === null || _4 === void 0 ? void 0 : _4.data) || "Unknown error");
+                // Handle 404 errors - task might already be deleted
+                if (((_4 = error.response) === null || _4 === void 0 ? void 0 : _4.status) === 404) {
+                    (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.info)(`Approval task ${subtask.gid} already deleted or not found - skipping`);
+                    continue;
+                }
+                // Log other HTTP errors but don't fail the entire action
+                console.warn(`Failed to delete approval task ${subtask.gid}:`, ((_5 = error.response) === null || _5 === void 0 ? void 0 : _5.data) || "Unknown error");
+                console.log("Full error response:", error.response);
             }
-            if (error instanceof Error)
-                (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.setFailed)(error.message);
-            else
-                (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.setFailed)("Unknown error");
+            else if (error instanceof Error) {
+                console.warn(`Error deleting approval task ${subtask.gid}: ${error.message}`);
+            }
+            else {
+                console.warn(`Unknown error deleting approval task ${subtask.gid}:`, error);
+            }
         }
     }
 });
