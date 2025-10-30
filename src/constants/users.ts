@@ -28,6 +28,13 @@ export const users = [
     team: "QA",
   },
   {
+    asanaId: "1206374583652451",
+    asanaUrlId: "1206374583652458",
+    asanaName: "Usman Khalid",
+    githubName: "usmankhalid738",
+    team: "QA",
+  },
+  {
     asanaId: "1202256129588512",
     asanaUrlId: "1202258098000877",
     asanaName: "Mariam El Zaatari",
