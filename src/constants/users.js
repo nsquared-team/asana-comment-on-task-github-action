@@ -135,4 +135,11 @@ exports.users = [
         githubName: "arefabouhamdan",
         team: "PEER_DEV",
     },
+    {
+        asanaId: "1212609896467470",
+        asanaUrlId: "1212609896467477",
+        asanaName: "Salma Hazimeh",
+        githubName: "salmahazimeh",
+        team: "PEER_DEV",
+    },
 ];
