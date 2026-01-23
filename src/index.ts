@@ -373,11 +373,12 @@ export const run = async () => {
             deleteApprovalTasks(approvalSubtasks);
             moveTaskToSection(id, pullRequestBaseBranch !== "master" ? SECTIONS.DONE : SECTIONS.RELEASED_BETA);
             if (pullRequestBaseBranch !== "master") {
-              await asanaAxios.put(`${REQUESTS.TASKS_URL}${id}`, {
-                data: {
-                  completed: true,
-                },
-              });
+              // Q1 2026 - Attempt to keep tasks open until tested in production and marked done manually
+              // await asanaAxios.put(`${REQUESTS.TASKS_URL}${id}`, {
+              //   data: {
+              //     completed: true,
+              //   },
+              // });
             }
           }
         }
