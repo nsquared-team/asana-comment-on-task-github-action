@@ -15725,11 +15725,12 @@ const run = () => __awaiter(void 0, void 0, void 0, function* () {
                         deleteApprovalTasks(approvalSubtasks);
                         moveTaskToSection(id, pullRequestBaseBranch !== "master" ? _constants_sections__WEBPACK_IMPORTED_MODULE_6__/* .DONE */ .jP : _constants_sections__WEBPACK_IMPORTED_MODULE_6__/* .RELEASED_BETA */ .VG);
                         if (pullRequestBaseBranch !== "master") {
-                            yield _requests_asanaAxios__WEBPACK_IMPORTED_MODULE_4___default().put(`${_constants_requests__WEBPACK_IMPORTED_MODULE_5__.TASKS_URL}${id}`, {
-                                data: {
-                                    completed: true,
-                                },
-                            });
+                            // Q1 2026 - Attempt to keep tasks open until tested in production and marked done manually
+                            // await asanaAxios.put(`${REQUESTS.TASKS_URL}${id}`, {
+                            //   data: {
+                            //     completed: true,
+                            //   },
+                            // });
                         }
                     }
                 }
