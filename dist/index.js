@@ -15499,7 +15499,7 @@ const run = () => __awaiter(void 0, void 0, void 0, function* () {
         // Get Task IDs From PR Description
         const asanaTasksLinks = pullRequestDescription === null || pullRequestDescription === void 0 ? void 0 : pullRequestDescription.match(/\bhttps?:\/\/\b(app\.asana\.com)\b\S+/gi);
         const asanaTasksIds = (asanaTasksLinks === null || asanaTasksLinks === void 0 ? void 0 : asanaTasksLinks.map((link) => {
-            let taskNumberMatch = link === null || link === void 0 ? void 0 : link.match(/task\/(\d+)|\/\d+\/(\d+)\/f/);
+            let taskNumberMatch = link === null || link === void 0 ? void 0 : link.match(/task\/(\d+)|\/0\/\d+\/(\d+)/);
             if (taskNumberMatch) {
                 if (taskNumberMatch[1]) {
                     return taskNumberMatch[1];
