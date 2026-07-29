@@ -4,6 +4,7 @@ import { getInput } from "@actions/core";
 import { GITHUB_PAT } from "../constants/inputs";
 import * as REQUESTS from "../constants/requests";
 
+// eslint-disable-next-line import/no-named-as-default-member -- axios.create is the documented API
 const githubAxios = axios.create({
   baseURL: REQUESTS.BASE_GITHUB_URL,
   headers: {

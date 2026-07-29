@@ -1,26 +1,37 @@
 import { AxiosError } from "axios";
-import { getInput } from "@actions/core";
 import * as ERRORS from "../constants/errors";
 import * as TRIGGERS from "../constants/triggers";
-
-export const getProjectsFromInput = (inputName: string): String[] => {
-  const projects = getInput(inputName);
-  if (!projects) return [];
-
-  return projects.split("\n").map((gid) => `${gid}`);
-};
+import { users } from "../constants/users";
 
 export const validateTrigger = (eventName: string) => {
   if (!TRIGGERS.allowed.includes(eventName))
     throw new Error(ERRORS.WRONG_TRIGGER);
 };
 
-export const validateProjectLists = (
-  allowedProjects: String[],
-  blockedProjects: String[]
-) => {
-  if (allowedProjects.length > 0 && blockedProjects.length > 0)
-    throw new Error(ERRORS.BOTH_PROJECT_LISTS_ARE_NOT_EMPTY);
+export const isAxiosError = (e: any): e is AxiosError => e.isAxiosError;
+
+export const findUserByGithubName = (githubName?: string) =>
+  users.find((user) => user.githubName === githubName);
+
+export const extractAsanaTaskIds = (description?: string): string[] => {
+  const links =
+    description?.match(/\bhttps?:\/\/\b(app\.asana\.com)\b\S+/gi) || [];
+  const ids = links
+    .map((link) => {
+      const match = link.match(/task\/(\d+)|\/0\/\d+\/(\d+)/);
+      return match ? match[1] || match[2] : null;
+    })
+    .filter((id): id is string => Boolean(id));
+  return [...new Set(ids)];
 };
 
-export const isAxiosError = (e: any): e is AxiosError => e.isAxiosError;
+// Review responsibility cascades PEER_DEV -> DEV -> QA: only the
+// highest-priority tier present among the requested reviewers is active.
+export const pickReviewerTier = (reviewers: any[]): any[] => {
+  const known = reviewers.filter(Boolean);
+  const peer = known.filter((reviewer) => reviewer.team === "PEER_DEV");
+  if (peer.length) return peer;
+  const dev = known.filter((reviewer) => reviewer.team === "DEV");
+  if (dev.length) return dev;
+  return known.filter((reviewer) => reviewer.team === "QA");
+};

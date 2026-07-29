@@ -4,6 +4,7 @@ import { getInput } from "@actions/core";
 import { ASANA_PAT } from "../constants/inputs";
 import * as REQUESTS from "../constants/requests";
 
+// eslint-disable-next-line import/no-named-as-default-member -- axios.create is the documented API
 const asanaAxios = axios.create({
   baseURL: REQUESTS.BASE_ASANA_URL,
   headers: {

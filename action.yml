@@ -1,41 +1,45 @@
-name: 'Add comment to Asana Task'
-description: 'Check pull request description for specific Asana task URLs and post comments to them whenever the workflow runs'
-author: Asana
+name: 'Sync GitHub PR state to Asana'
+description: 'Mirrors pull request activity onto the Asana tasks linked in the PR description: comments, followers, board sections, and review/CI approval subtasks.'
+author: nsquared-team
 branding:
   icon: circle
   color: green
 inputs:
   action-url:
-    description: 'The Action URL used in the Asana task description.'
+    description: 'URL of the CI run, linked from the "Automated CI Testing" approval subtask (used with CI-status invocations).'
     required: false
     default: ''
   github-pat:
-    description: 'The GitHub personal access token for the action.'
+    description: 'GitHub token. Needed to fetch PR reviews (approval cascade) and to edit the PR description (edit_pr_description mode).'
     required: false
     default: ''
   asana-pat:
-    description: 'The Asana personal access token for the action.'
-    required: false
-    default: ''
-  asana-secret:
-    description: 'The Asana secret for the action. Read more about how to generate this secret at https://github.com/Asana/create-app-attachment-github-action#step-2-set-up-a-repository-secret-for-the-secret-token'
+    description: 'Asana personal access token used for all Asana API calls.'
     required: true
     default: ''
-  allowed-projects:
-    description: 'List of allowed projects. The action will only add comments to tasks in these projects. Only one of allowed-projects or blocked-projects can be specified.'
-    required: false
-    default: ''
-  blocked-projects:
-    description: 'List of allowed projects. The action will not add comments to tasks or subtasks of tasks in any of these projects. Only one of allowed-projects or blocked-projects can be specified.'
+  asana-secret:
+    description: 'Legacy input kept for workflow compatibility. Not used by this fork.'
     required: false
     default: ''
   comment-text:
-    description: 'What comment the action should use. Learn how to customize this message at https://github.com/Asana/create-app-attachment-github-action#step-2-set-up-a-repository-secret-for-the-secret-token'
-    required: true
+    description: 'Mode switch. One of "approved" / "rejected" (CI verdict sync) or "edit_pr_description" (inject the CI sandbox block into the PR body). Any other value runs the default PR-activity sync.'
+    required: false
+    default: ''
+  pr-description:
+    description: 'Sandbox block content appended to the PR description in edit_pr_description mode.'
+    required: false
     default: ''
 outputs:
-  status:
-    description: 'status'
+  event:
+    description: 'The GitHub event name that was processed.'
+  action:
+    description: 'The event action that was processed.'
+  comment:
+    description: 'The comment HTML posted to Asana, if any.'
+  commentStatus:
+    description: 'HTTP status of the Asana comment call, if any.'
+  commentBody:
+    description: 'The formatted comment body, if any.'
 runs:
-  using: 'node16'
+  using: 'node20'
   main: 'dist/index.js'
