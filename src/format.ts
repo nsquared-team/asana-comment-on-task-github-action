@@ -29,9 +29,9 @@ export const stripQuotesAndArrows = (body: string): string => {
 // Convert markdown images/hyperlinks/bare links into Asana anchor tags.
 export const linkifyBody = (body: string): string => {
   let commentBody = body;
-  const links = commentBody.match(/\bhttps?:\/\/\S+[\w|\/]/gi) || [];
+  const links = commentBody.match(/\bhttps?:\/\/\S+[\w|/]/gi) || [];
 
-  links.forEach((link: string) => {
+  for (const link of links) {
     const linkRegex = link.replace(/\//gi, "\\/");
     const linkSite = link.replace(/.+\/\/|www.|\..+/g, "");
     const capitalLinkSite =
@@ -65,7 +65,7 @@ export const linkifyBody = (body: string): string => {
         `<a href="${href}"> 🔗 ${capitalLinkSite} Link 🔗 </a>`
       );
     }
-  });
+  }
 
   return commentBody;
 };

@@ -6,6 +6,24 @@ import * as utils from "./utils";
 
 export const ottoUser = () => utils.findUserByGithubName("otto-bot-git");
 
+// Asana caps a request that carries `limit` at one page and hands back an
+// offset for the rest; without following it a long-lived task's stories or
+// subtasks are silently truncated.
+export const getAllPages = async (url: string) => {
+  const separator = url.includes("?") ? "&" : "?";
+  let results: any[] = [];
+  let offset: string | undefined;
+
+  do {
+    const pageUrl = offset ? `${url}${separator}offset=${offset}` : url;
+    const response = await asanaAxios.get(pageUrl);
+    results = results.concat(response.data.data || []);
+    offset = response.data.next_page?.offset;
+  } while (offset);
+
+  return results;
+};
+
 export const moveTaskToSection = async (
   taskId: string,
   moveSection: string,
@@ -15,14 +33,18 @@ export const moveTaskToSection = async (
   const taskResponse = await asanaAxios.get(taskUrl);
   const task = taskResponse.data.data;
 
-  for (const membership of task.memberships) {
-    if (
-      doNotMoveSections &&
-      doNotMoveSections.includes(membership.section.name)
-    ) {
-      continue;
-    }
+  // A task parked in a protected section stays put in *every* project it
+  // belongs to - a per-membership skip would still move it on the others.
+  if (
+    doNotMoveSections &&
+    task.memberships.some((membership: any) =>
+      doNotMoveSections.includes(membership.section?.name)
+    )
+  ) {
+    return;
+  }
 
+  for (const membership of task.memberships) {
     const projectId = membership.project.gid;
     const sectionsUrl = `${REQUESTS.PROJECTS_URL}${projectId}${REQUESTS.SECTIONS_URL}`;
     const sectionsResponse = await asanaAxios.get(sectionsUrl);
@@ -64,14 +86,13 @@ export const addFollowers = async (taskId: string, followers: string[]) => {
 
 export const getStories = async (taskId: string) => {
   const url = `${REQUESTS.TASKS_URL}${taskId}${REQUESTS.STORIES_URL}${REQUESTS.STORIES_LIST_PARAMS}`;
-  const stories = await asanaAxios.get(url);
-  return stories.data.data;
+  return getAllPages(url);
 };
 
 export const getAllApprovalSubtasks = async (taskId: string, creator: any) => {
   const url = `${REQUESTS.TASKS_URL}${taskId}${REQUESTS.SUBTASKS_URL}`;
-  const subtasks = await asanaAxios.get(url);
-  return subtasks.data.data.filter(
+  const subtasks = await getAllPages(url);
+  return subtasks.filter(
     (subtask: any) =>
       subtask.resource_subtype === "approval" &&
       !subtask.completed &&
@@ -86,8 +107,8 @@ export const getApprovalSubtask = async (
   assignee: any
 ) => {
   const url = `${REQUESTS.TASKS_URL}${taskId}${REQUESTS.SUBTASKS_URL}`;
-  const subtasks = await asanaAxios.get(url);
-  return subtasks.data.data.find(
+  const subtasks = await getAllPages(url);
+  return subtasks.find(
     (subtask: any) =>
       subtask.resource_subtype === "approval" &&
       subtask.completed === isComplete &&
@@ -132,7 +153,9 @@ export const cleanupApprovalTasks = async (taskId: string) => {
   const assignedTo = (subtask: any) => subtask.assignee?.gid;
 
   // QA subtasks only exist once every other tier has approved.
-  if (approvalSubtasks.some((subtask: any) => qaIds.includes(assignedTo(subtask)))) {
+  if (
+    approvalSubtasks.some((subtask: any) => qaIds.includes(assignedTo(subtask)))
+  ) {
     if (
       approvalSubtasks.some(
         (subtask: any) => !qaIds.includes(assignedTo(subtask))
@@ -147,7 +170,11 @@ export const cleanupApprovalTasks = async (taskId: string) => {
   }
 
   // DEV subtasks only exist once peer devs have approved.
-  if (approvalSubtasks.some((subtask: any) => devIds.includes(assignedTo(subtask)))) {
+  if (
+    approvalSubtasks.some((subtask: any) =>
+      devIds.includes(assignedTo(subtask))
+    )
+  ) {
     if (
       approvalSubtasks.some(
         (subtask: any) =>

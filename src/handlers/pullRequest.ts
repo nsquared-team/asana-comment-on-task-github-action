@@ -4,13 +4,24 @@ import * as utils from "../utils";
 import { postCommentToTasks } from "./comment";
 import { SyncEvent } from "../event";
 
-const moveTasksForDraft = async (event: SyncEvent) => {
+// No live PR to track (draft, or closed without merging) means the task is
+// back with its author.
+const moveTasksToInProgress = async (event: SyncEvent) => {
   for (const taskId of event.taskIds) {
     await asana.moveTaskToSection(
       taskId,
       SECTIONS.IN_PROGRESS,
       SECTIONS.PROTECTED_FROM_DRAFT
     );
+  }
+};
+
+const moveTasksToReview = async (event: SyncEvent, activeTier: any[]) => {
+  for (const taskId of event.taskIds) {
+    await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
+    for (const reviewer of activeTier) {
+      await asana.addRequestedReview(taskId, reviewer, event.prUrl);
+    }
   }
 };
 
@@ -28,14 +39,16 @@ export const handlePullRequest = async (event: SyncEvent) => {
 
   const activeTier = utils.pickReviewerTier(event.requestedReviewers);
 
-  // Draft rule: a draft PR means the task is being worked on.
+  // Opened and reopened both mirror whatever state the PR is in right now:
+  // draft means the task is being worked on, ready means it is up for review.
   // (Falls through so the "PR is open" comment still posts.)
-  if (event.action === "opened" && event.isDraft) {
-    await moveTasksForDraft(event);
+  if (event.action === "opened" || event.action === "reopened") {
+    if (event.isDraft) await moveTasksToInProgress(event);
+    else await moveTasksToReview(event, activeTier);
   }
 
   if (event.action === "converted_to_draft") {
-    await moveTasksForDraft(event);
+    await moveTasksToInProgress(event);
     // Pending review requests are stale once the author pulls the PR back.
     for (const taskId of event.taskIds) {
       await asana.deleteReviewSubtasks(taskId);
@@ -45,12 +58,7 @@ export const handlePullRequest = async (event: SyncEvent) => {
 
   // Only a ready-for-review PR puts its task in Testing / Review.
   if (event.action === "ready_for_review") {
-    for (const taskId of event.taskIds) {
-      await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
-      for (const reviewer of activeTier) {
-        await asana.addRequestedReview(taskId, reviewer, event.prUrl);
-      }
-    }
+    await moveTasksToReview(event, activeTier);
     return;
   }
 
@@ -78,18 +86,28 @@ export const handlePullRequest = async (event: SyncEvent) => {
     return;
   }
 
-  if (event.action === "closed" && event.prMerged) {
-    const targetSection = SECTIONS.sectionForMerge(
-      event.repoFullName,
-      event.prBaseRef
-    );
+  // Either way a closed PR leaves no review outstanding, so the pending
+  // approval subtasks go regardless of how it closed.
+  if (event.action === "closed") {
+    const targetSection = event.prMerged
+      ? SECTIONS.sectionForMerge(event.repoFullName, event.prBaseRef)
+      : SECTIONS.IN_PROGRESS;
+
     for (const taskId of event.taskIds) {
       const approvalSubtasks = await asana.getAllApprovalSubtasks(
         taskId,
         asana.ottoUser()
       );
       await asana.deleteApprovalTasks(approvalSubtasks);
-      await asana.moveTaskToSection(taskId, targetSection);
+      // A merge into a non-release branch ships nothing, so it moves nothing.
+      if (!targetSection) continue;
+      await asana.moveTaskToSection(
+        taskId,
+        targetSection,
+        // Abandoning a PR must not drag a task out of Blocked or a release
+        // column; a merge is allowed to move the task anywhere.
+        event.prMerged ? undefined : SECTIONS.PROTECTED_FROM_DRAFT
+      );
       // Tasks are never auto-completed: they stay open until verified in
       // production and closed by a human.
     }

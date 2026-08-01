@@ -61,3 +61,23 @@ describe("findUserByGithubName", () => {
     expect(utils.findUserByGithubName(undefined)).toBeUndefined();
   });
 });
+
+describe("isReviewTier", () => {
+  test("only the three human tiers count as a review tier", () => {
+    expect(utils.isReviewTier({ team: "PEER_DEV" })).toBe(true);
+    expect(utils.isReviewTier({ team: "DEV" })).toBe(true);
+    expect(utils.isReviewTier({ team: "QA" })).toBe(true);
+    expect(utils.isReviewTier({ team: "BOT" })).toBe(false);
+    expect(utils.isReviewTier(undefined)).toBe(false);
+  });
+});
+
+describe("isAxiosError", () => {
+  test("a non-object throw returns false instead of throwing in the catch", () => {
+    expect(() => utils.isAxiosError(null)).not.toThrow();
+    expect(utils.isAxiosError(null)).toBe(false);
+    expect(utils.isAxiosError(undefined)).toBe(false);
+    expect(utils.isAxiosError(new Error("plain"))).toBe(false);
+    expect(utils.isAxiosError({ isAxiosError: true })).toBe(true);
+  });
+});

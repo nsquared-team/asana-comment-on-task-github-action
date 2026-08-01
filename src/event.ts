@@ -57,8 +57,7 @@ export const buildEvent = (context: any): SyncEvent => {
     isDraft: payload.pull_request?.draft || false,
     reviewState: payload.review?.state || "",
     reviewBody: payload.review?.body || "",
-    commentUrl:
-      payload.comment?.html_url || payload.review?.html_url || "",
+    commentUrl: payload.comment?.html_url || payload.review?.html_url || "",
     rawCommentBody: payload.comment?.body || payload.review?.body || "",
     commentPath: payload.comment?.path || "",
     commentLine: payload.comment?.original_line,

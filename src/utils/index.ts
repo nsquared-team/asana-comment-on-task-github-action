@@ -8,7 +8,8 @@ export const validateTrigger = (eventName: string) => {
     throw new Error(ERRORS.WRONG_TRIGGER);
 };
 
-export const isAxiosError = (e: any): e is AxiosError => e.isAxiosError;
+export const isAxiosError = (e: any): e is AxiosError =>
+  Boolean(e?.isAxiosError);
 
 export const findUserByGithubName = (githubName?: string) =>
   users.find((user) => user.githubName === githubName);
@@ -24,6 +25,14 @@ export const extractAsanaTaskIds = (description?: string): string[] => {
     .filter((id): id is string => Boolean(id));
   return [...new Set(ids)];
 };
+
+// The three human review tiers. Any other team (BOT) is not a review tier:
+// its verdict is tracked on the CI subtask and the changes-requested path,
+// never folded into the tier gating.
+export const REVIEW_TIERS = ["PEER_DEV", "DEV", "QA"];
+
+export const isReviewTier = (user?: any) =>
+  Boolean(user && REVIEW_TIERS.includes(user.team));
 
 // Review responsibility cascades PEER_DEV -> DEV -> QA: only the
 // highest-priority tier present among the requested reviewers is active.

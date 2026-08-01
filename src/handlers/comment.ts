@@ -104,12 +104,16 @@ export const handleComment = async (event: SyncEvent) => {
     }
   } else {
     // pull_request_review_comment: inline code comment with file context.
+    // File-level comments carry no line number, so name only the file.
     const files = event.commentPath.split("/");
     const fileName = files[files.length - 1];
+    const location = event.commentLine
+      ? `${fileName} (Line ${event.commentLine})`
+      : fileName;
 
-    commentText = `<body> ${userHTML} is requesting the following <a href="${event.commentUrl}">changes</a> on ${fileName} (Line ${event.commentLine}):\n\n${body} </body>`;
+    commentText = `<body> ${userHTML} is requesting the following <a href="${event.commentUrl}">changes</a> on ${location}:\n\n${body} </body>`;
     if (event.commentInReplyTo) {
-      commentText = `<body> ${userHTML} <a href="${event.commentUrl}">replied</a> on ${fileName} (Line ${event.commentLine}):\n\n${body} </body>`;
+      commentText = `<body> ${userHTML} <a href="${event.commentUrl}">replied</a> on ${location}:\n\n${body} </body>`;
     }
   }
 

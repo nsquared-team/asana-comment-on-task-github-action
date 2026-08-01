@@ -55,15 +55,18 @@ const sectionsPayload = Object.keys(SECTION_GIDS).map((name) => ({
 
 interface MockOptions {
   taskSection?: string;
+  taskSections?: string[];
   subtasks?: any[];
   stories?: any[];
 }
 
 const mockAsana = ({
   taskSection = "Next",
+  taskSections,
   subtasks = [],
   stories = [],
 }: MockOptions = {}) => {
+  const sections = taskSections || [taskSection];
   asanaGet.mockImplementation((url: string) => {
     if (url.includes("/subtasks"))
       return Promise.resolve({ data: { data: subtasks } });
@@ -74,9 +77,10 @@ const mockAsana = ({
     return Promise.resolve({
       data: {
         data: {
-          memberships: [
-            { section: { name: taskSection }, project: { gid: "proj-1" } },
-          ],
+          memberships: sections.map((name, index) => ({
+            section: { name },
+            project: { gid: `proj-${index + 1}` },
+          })),
         },
       },
     });
@@ -117,6 +121,18 @@ const baseEvent = (overrides: Partial<SyncEvent> = {}): SyncEvent => ({
   prDescriptionInput: "",
   ...overrides,
 });
+
+const OTTO_ASANA_ID = "1202470392325800";
+const PEER = {
+  githubName: "MariamElZaatari",
+  asanaId: "1202256129588512",
+  team: "PEER_DEV",
+};
+const QA = {
+  githubName: "gnarza",
+  asanaId: "1172261355139211",
+  team: "QA",
+};
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -409,5 +425,303 @@ describe("merge mapping", () => {
       ([, payload]: [string, any]) => payload?.data?.completed === true
     );
     expect(completedCalls).toHaveLength(0);
+  });
+
+  test("a stacked merge into a non-release branch moves nothing", async () => {
+    mockAsana({
+      subtasks: [
+        {
+          gid: "review-1",
+          name: "Review",
+          resource_subtype: "approval",
+          completed: false,
+          created_by: { gid: OTTO_ASANA_ID },
+          assignee: { gid: PEER.asanaId },
+        },
+      ],
+    });
+    await handlePullRequest(
+      merged("nsquared-team/aaardvark-app", "feature-parent")
+    );
+    const sectionMoves = asanaPost.mock.calls.filter(([url]: [string]) =>
+      url.includes("/addTask")
+    );
+    expect(sectionMoves).toHaveLength(0);
+    // The review is still over, so its subtask still goes.
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/review-1");
+  });
+});
+
+describe("PR closed without merging", () => {
+  const closedUnmerged = (options: MockOptions = {}) => {
+    mockAsana({
+      subtasks: [
+        {
+          gid: "review-1",
+          name: "Review",
+          resource_subtype: "approval",
+          completed: false,
+          created_by: { gid: OTTO_ASANA_ID },
+          assignee: { gid: PEER.asanaId },
+        },
+      ],
+      ...options,
+    });
+    return baseEvent({
+      action: "closed",
+      prMerged: false,
+      prState: "closed",
+    });
+  };
+
+  test("deletes the stale review subtasks and hands the task back to In Progress", async () => {
+    const event = closedUnmerged({ taskSection: "Testing / Review" });
+    await handlePullRequest(event);
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/review-1");
+    expect(movesTo("In Progress")).toHaveLength(1);
+  });
+
+  test("does not drag a task out of Blocked or a released column", async () => {
+    await handlePullRequest(closedUnmerged({ taskSection: "Blocked" }));
+    expect(movesTo("In Progress")).toHaveLength(0);
+
+    jest.clearAllMocks();
+    await handlePullRequest(closedUnmerged({ taskSection: "Released" }));
+    expect(movesTo("In Progress")).toHaveLength(0);
+  });
+});
+
+describe("opened and reopened mirror the PR's current state", () => {
+  test("a PR opened ready for review moves the task and creates the tier subtask", async () => {
+    mockAsana();
+    await handlePullRequest(
+      baseEvent({
+        action: "opened",
+        isDraft: false,
+        requestedReviewers: [PEER],
+      })
+    );
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    const subtaskCreates = asanaPost.mock.calls.filter(([url]: [string]) =>
+      url.includes("/tasks/111/subtasks")
+    );
+    expect(subtaskCreates).toHaveLength(1);
+    expect(subtaskCreates[0][1].data.assignee).toBe(PEER.asanaId);
+  });
+
+  test("a reopened ready PR goes back to Testing / Review", async () => {
+    mockAsana({ taskSection: "Done" });
+    await handlePullRequest(
+      baseEvent({ action: "reopened", isDraft: false, prState: "open" })
+    );
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+  });
+
+  test("a reopened draft PR goes back to In Progress", async () => {
+    mockAsana({ taskSection: "Done" });
+    await handlePullRequest(
+      baseEvent({ action: "reopened", isDraft: true, prState: "open" })
+    );
+    expect(movesTo("In Progress")).toHaveLength(1);
+  });
+});
+
+describe("bots are not a review tier", () => {
+  const approvalBy = (login: string) =>
+    baseEvent({
+      eventName: "pull_request_review",
+      action: "submitted",
+      reviewState: "approved",
+      username: login,
+      commentUrl: `https://github.com/o/r/pull/42#review-${login}`,
+    });
+
+  test("an approval from otto alone never promotes the task", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({
+      data: [
+        {
+          user: { login: "otto-bot-git" },
+          state: "APPROVED",
+          submitted_at: "2026-08-01T00:00:00Z",
+        },
+      ],
+    });
+    await handleReview(approvalBy("otto-bot-git"));
+    expect(movesTo("Approved")).toHaveLength(0);
+  });
+
+  test("otto requesting changes does not block a tier that has fully approved", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({
+      data: [
+        {
+          user: { login: "otto-bot-git" },
+          state: "CHANGES_REQUESTED",
+          submitted_at: "2026-08-01T00:00:00Z",
+        },
+        {
+          user: { login: PEER.githubName },
+          state: "APPROVED",
+          submitted_at: "2026-08-01T01:00:00Z",
+        },
+      ],
+    });
+    await handleReview(approvalBy(PEER.githubName));
+    expect(movesTo("Approved")).toHaveLength(1);
+  });
+
+  test("otto still pending neither pings QA nor blocks the human tiers", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({
+      data: [
+        {
+          user: { login: PEER.githubName },
+          state: "APPROVED",
+          submitted_at: "2026-08-01T01:00:00Z",
+        },
+      ],
+    });
+    await handleReview({
+      ...approvalBy(PEER.githubName),
+      requestedReviewers: [
+        { githubName: "otto-bot-git", asanaId: OTTO_ASANA_ID, team: "BOT" },
+      ],
+    });
+    const subtaskCreates = asanaPost.mock.calls.filter(([url]: [string]) =>
+      url.includes("/tasks/111/subtasks")
+    );
+    expect(subtaskCreates).toHaveLength(0);
+    expect(movesTo("Approved")).toHaveLength(1);
+  });
+});
+
+describe("dismissed reviews", () => {
+  test("a dismissed approval stops counting as an approval", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({
+      data: [
+        {
+          user: { login: PEER.githubName },
+          state: "DISMISSED",
+          submitted_at: "2026-08-01T00:00:00Z",
+        },
+        {
+          user: { login: QA.githubName },
+          state: "APPROVED",
+          submitted_at: "2026-08-01T01:00:00Z",
+        },
+      ],
+    });
+    await handleReview(
+      baseEvent({
+        eventName: "pull_request_review",
+        action: "submitted",
+        reviewState: "approved",
+        username: QA.githubName,
+        commentUrl: "https://github.com/o/r/pull/42#review-d1",
+      })
+    );
+    expect(movesTo("Approved")).toHaveLength(0);
+  });
+
+  test("dismissing a review pulls the task back out of Approved", async () => {
+    mockAsana({ taskSection: "Approved" });
+    await handleReview(
+      baseEvent({
+        eventName: "pull_request_review",
+        action: "dismissed",
+        reviewState: "dismissed",
+        username: PEER.githubName,
+        commentUrl: "https://github.com/o/r/pull/42#review-d2",
+      })
+    );
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+  });
+
+  test("a dismissal never drags a released task backwards", async () => {
+    mockAsana({ taskSection: "Released in Alpha" });
+    await handleReview(
+      baseEvent({
+        eventName: "pull_request_review",
+        action: "dismissed",
+        reviewState: "dismissed",
+        username: PEER.githubName,
+        commentUrl: "https://github.com/o/r/pull/42#review-d3",
+      })
+    );
+    expect(movesTo("Testing / Review")).toHaveLength(0);
+  });
+});
+
+describe("Asana list reads are paginated", () => {
+  test("subtask reads follow next_page instead of stopping at one page", async () => {
+    mockAsana();
+    const pageOne = {
+      data: {
+        data: [
+          {
+            gid: "review-page-1",
+            name: "Review",
+            resource_subtype: "approval",
+            completed: false,
+            created_by: { gid: OTTO_ASANA_ID },
+            assignee: { gid: PEER.asanaId },
+          },
+        ],
+        next_page: { offset: "page-2-token" },
+      },
+    };
+    const pageTwo = {
+      data: {
+        data: [
+          {
+            gid: "review-page-2",
+            name: "Review",
+            resource_subtype: "approval",
+            completed: false,
+            created_by: { gid: OTTO_ASANA_ID },
+            assignee: { gid: QA.asanaId },
+          },
+        ],
+      },
+    };
+
+    asanaGet.mockImplementation((url: string) => {
+      if (url.includes("/subtasks"))
+        return Promise.resolve(url.includes("offset=") ? pageTwo : pageOne);
+      if (url.includes("/sections"))
+        return Promise.resolve({ data: { data: sectionsPayload } });
+      return Promise.resolve({
+        data: {
+          data: {
+            memberships: [
+              { section: { name: "Next" }, project: { gid: "proj-1" } },
+            ],
+          },
+        },
+      });
+    });
+
+    await handlePullRequest(
+      baseEvent({ action: "converted_to_draft", isDraft: true })
+    );
+    // The second page's subtask is only reachable via the offset request.
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/review-page-1");
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/review-page-2");
+  });
+});
+
+describe("section protection spans every project the task is in", () => {
+  test("a task Blocked in one project does not move in the others", async () => {
+    mockAsana({ taskSections: ["Blocked", "Next"] });
+    await handlePullRequest(baseEvent({ action: "opened", isDraft: true }));
+    expect(movesTo("In Progress")).toHaveLength(0);
+  });
+
+  test("an unprotected task still moves in every project it belongs to", async () => {
+    mockAsana({ taskSections: ["Next", "Next"] });
+    await handlePullRequest(baseEvent({ action: "opened", isDraft: true }));
+    expect(movesTo("In Progress")).toHaveLength(2);
   });
 });

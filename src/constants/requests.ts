@@ -1,5 +1,11 @@
 export const RETRIES = 3;
 export const RETRY_DELAY = 1000;
+// Ceiling for a server-supplied Retry-After, so a long rate-limit window
+// cannot stall a consumer's CI run.
+export const MAX_RETRY_DELAY = 15000;
+// A request that never got a response may still have been applied, so only
+// methods that are safe to repeat are retried in that case.
+export const IDEMPOTENT_METHODS = ["get", "head", "options", "put", "delete"];
 export const BASE_ASANA_URL = "https://app.asana.com/api/1.0";
 export const PROJECTS_URL = "/projects/";
 export const TASKS_URL = "/tasks/";

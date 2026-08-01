@@ -48,10 +48,16 @@ const RELEASE_SECTION_BY_BASE: { [base: string]: string } = {
 
 const STAGED_RELEASE_REPOS = ["aaardvark-app", "blinkmetrics-app"];
 
-export const sectionForMerge = (repoName: string, baseRef: string): string => {
+// undefined means "merged, but nothing shipped" - a stacked PR landing on
+// another feature branch of a staged-release repo. Those tasks keep their
+// section; only a merge into a real release branch moves them.
+export const sectionForMerge = (
+  repoName: string,
+  baseRef: string
+): string | undefined => {
   const shortName = repoName.split("/").pop() || repoName;
   if (STAGED_RELEASE_REPOS.includes(shortName)) {
-    return RELEASE_SECTION_BY_BASE[baseRef] || DONE;
+    return RELEASE_SECTION_BY_BASE[baseRef];
   }
   return DONE;
 };
