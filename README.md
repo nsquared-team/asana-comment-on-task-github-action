@@ -6,7 +6,9 @@ A task is linked by putting its Asana URL anywhere in the PR description (both `
 
 ## The state machine
 
-The task tracks whatever state the PR is in right now. A PR that is **ready for review** puts its task in *Testing / Review*; a **draft** PR, or one closed without merging, keeps its task in *In Progress*. *Blocked* and the released columns are respected by every move except a merge.
+The task tracks whatever state the PR is in right now. A PR that is **ready for review** puts its task in *Testing / Review*; a **draft** PR, or one closed without merging, keeps its task in *In Progress*.
+
+*Blocked* and the released columns are respected by the moves that park a task — the draft rule, an unmerged close, and every demotion. They are deliberately **not** respected when a PR goes ready for review: a PR up for review is a real state change, and the task follows it out of Blocked. A merge respects nothing and always moves the task.
 
 ```mermaid
 stateDiagram-v2
@@ -30,8 +32,7 @@ stateDiagram-v2
 | PR event | Task move | Notes |
 | --- | --- | --- |
 | Opened / reopened as draft, or converted to draft | → In Progress | Skipped if the task sits in a Blocked or Released section. Convert-to-draft also deletes pending "Review" subtasks (the CI subtask survives). |
-| Opened / reopened ready for review | → Testing / Review | Creates a pending "Review" approval subtask for the active reviewer tier. |
-| Ready for review / review requested | → Testing / Review | Creates a pending "Review" approval subtask for the active reviewer tier. Draft PRs are ignored. |
+| Opened / reopened ready for review, marked ready for review, or review requested | → Testing / Review | Creates a pending "Review" approval subtask for the active reviewer tier. Draft PRs are ignored. Moves the task even out of Blocked — a PR up for review is a real state change. |
 | CI rejected (`comment-text: rejected`) | → Next | Pending review subtasks are deleted; the "Automated CI Testing" subtask records the verdict. Tasks in In Progress or Released sections stay put. |
 | CI approved after a rejection | → Testing / Review | Only when the PR is not a draft; review subtasks are recreated. |
 | Review: changes requested | → Next | Task is also reopened (marked incomplete). Tasks in In Progress or Released sections stay put. |
