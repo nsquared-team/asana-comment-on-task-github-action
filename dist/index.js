@@ -16082,7 +16082,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.updateApprovalSubtask = exports.addRequestedReview = exports.addApprovalTask = exports.cleanupApprovalTasks = exports.deleteReviewSubtasks = exports.deleteApprovalTasks = exports.getApprovalSubtask = exports.getAllApprovalSubtasks = exports.getStories = exports.addFollowers = exports.setTaskIncomplete = exports.moveTaskToSection = exports.ottoUser = void 0;
+exports.updateApprovalSubtask = exports.addRequestedReview = exports.addApprovalTask = exports.cleanupApprovalTasks = exports.deleteReviewSubtasks = exports.deleteApprovalTasks = exports.getApprovalSubtask = exports.getAllApprovalSubtasks = exports.getStories = exports.addFollowers = exports.setTaskIncomplete = exports.moveTaskToSection = exports.getAllPages = exports.ottoUser = void 0;
 const core_1 = __nccwpck_require__(7484);
 const asanaAxios_1 = __importDefault(__nccwpck_require__(5940));
 const REQUESTS = __importStar(__nccwpck_require__(4291));
@@ -16090,15 +16090,34 @@ const users_1 = __nccwpck_require__(9101);
 const utils = __importStar(__nccwpck_require__(8541));
 const ottoUser = () => utils.findUserByGithubName("otto-bot-git");
 exports.ottoUser = ottoUser;
+// Asana caps a request that carries `limit` at one page and hands back an
+// offset for the rest; without following it a long-lived task's stories or
+// subtasks are silently truncated.
+const getAllPages = (url) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
+    const separator = url.includes("?") ? "&" : "?";
+    let results = [];
+    let offset;
+    do {
+        const pageUrl = offset ? `${url}${separator}offset=${offset}` : url;
+        const response = yield asanaAxios_1.default.get(pageUrl);
+        results = results.concat(response.data.data || []);
+        offset = (_a = response.data.next_page) === null || _a === void 0 ? void 0 : _a.offset;
+    } while (offset);
+    return results;
+});
+exports.getAllPages = getAllPages;
 const moveTaskToSection = (taskId, moveSection, doNotMoveSections) => __awaiter(void 0, void 0, void 0, function* () {
     const taskUrl = `${REQUESTS.TASKS_URL}${taskId}`;
     const taskResponse = yield asanaAxios_1.default.get(taskUrl);
     const task = taskResponse.data.data;
+    // A task parked in a protected section stays put in *every* project it
+    // belongs to - a per-membership skip would still move it on the others.
+    if (doNotMoveSections &&
+        task.memberships.some((membership) => { var _a; return doNotMoveSections.includes((_a = membership.section) === null || _a === void 0 ? void 0 : _a.name); })) {
+        return;
+    }
     for (const membership of task.memberships) {
-        if (doNotMoveSections &&
-            doNotMoveSections.includes(membership.section.name)) {
-            continue;
-        }
         const projectId = membership.project.gid;
         const sectionsUrl = `${REQUESTS.PROJECTS_URL}${projectId}${REQUESTS.SECTIONS_URL}`;
         const sectionsResponse = yield asanaAxios_1.default.get(sectionsUrl);
@@ -16137,14 +16156,13 @@ const addFollowers = (taskId, followers) => __awaiter(void 0, void 0, void 0, fu
 exports.addFollowers = addFollowers;
 const getStories = (taskId) => __awaiter(void 0, void 0, void 0, function* () {
     const url = `${REQUESTS.TASKS_URL}${taskId}${REQUESTS.STORIES_URL}${REQUESTS.STORIES_LIST_PARAMS}`;
-    const stories = yield asanaAxios_1.default.get(url);
-    return stories.data.data;
+    return (0, exports.getAllPages)(url);
 });
 exports.getStories = getStories;
 const getAllApprovalSubtasks = (taskId, creator) => __awaiter(void 0, void 0, void 0, function* () {
     const url = `${REQUESTS.TASKS_URL}${taskId}${REQUESTS.SUBTASKS_URL}`;
-    const subtasks = yield asanaAxios_1.default.get(url);
-    return subtasks.data.data.filter((subtask) => subtask.resource_subtype === "approval" &&
+    const subtasks = yield (0, exports.getAllPages)(url);
+    return subtasks.filter((subtask) => subtask.resource_subtype === "approval" &&
         !subtask.completed &&
         subtask.created_by &&
         subtask.created_by.gid === (creator === null || creator === void 0 ? void 0 : creator.asanaId));
@@ -16152,22 +16170,22 @@ const getAllApprovalSubtasks = (taskId, creator) => __awaiter(void 0, void 0, vo
 exports.getAllApprovalSubtasks = getAllApprovalSubtasks;
 const getApprovalSubtask = (taskId, isComplete, assignee) => __awaiter(void 0, void 0, void 0, function* () {
     const url = `${REQUESTS.TASKS_URL}${taskId}${REQUESTS.SUBTASKS_URL}`;
-    const subtasks = yield asanaAxios_1.default.get(url);
-    return subtasks.data.data.find((subtask) => subtask.resource_subtype === "approval" &&
+    const subtasks = yield (0, exports.getAllPages)(url);
+    return subtasks.find((subtask) => subtask.resource_subtype === "approval" &&
         subtask.completed === isComplete &&
         subtask.assignee &&
         subtask.assignee.gid === (assignee === null || assignee === void 0 ? void 0 : assignee.asanaId));
 });
 exports.getApprovalSubtask = getApprovalSubtask;
 const deleteApprovalTasks = (approvalSubtasks) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a;
+    var _b;
     for (const subtask of approvalSubtasks) {
         try {
             yield asanaAxios_1.default.delete(`${REQUESTS.TASKS_URL}${subtask.gid}`);
             (0, core_1.info)(`Deleted approval subtask ${subtask.gid}`);
         }
         catch (error) {
-            if (utils.isAxiosError(error) && ((_a = error.response) === null || _a === void 0 ? void 0 : _a.status) === 404) {
+            if (utils.isAxiosError(error) && ((_b = error.response) === null || _b === void 0 ? void 0 : _b.status) === 404) {
                 (0, core_1.info)(`Approval subtask ${subtask.gid} already deleted - skipping`);
                 continue;
             }
@@ -16276,9 +16294,15 @@ exports.PR_DESCRIPTION = "pr-description";
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.REVIEWS_URL = exports.PULLS_URL = exports.REPOS_URL = exports.BASE_GITHUB_URL = exports.ADD_TASK_URL = exports.ADD_FOLLOWERS_URL = exports.STORIES_LIST_PARAMS = exports.SUBTASKS_URL = exports.STORIES_URL = exports.SECTIONS_URL = exports.TASKS_URL = exports.PROJECTS_URL = exports.BASE_ASANA_URL = exports.RETRY_DELAY = exports.RETRIES = void 0;
+exports.REVIEWS_URL = exports.PULLS_URL = exports.REPOS_URL = exports.BASE_GITHUB_URL = exports.ADD_TASK_URL = exports.ADD_FOLLOWERS_URL = exports.STORIES_LIST_PARAMS = exports.SUBTASKS_URL = exports.STORIES_URL = exports.SECTIONS_URL = exports.TASKS_URL = exports.PROJECTS_URL = exports.BASE_ASANA_URL = exports.IDEMPOTENT_METHODS = exports.MAX_RETRY_DELAY = exports.RETRY_DELAY = exports.RETRIES = void 0;
 exports.RETRIES = 3;
 exports.RETRY_DELAY = 1000;
+// Ceiling for a server-supplied Retry-After, so a long rate-limit window
+// cannot stall a consumer's CI run.
+exports.MAX_RETRY_DELAY = 15000;
+// A request that never got a response may still have been applied, so only
+// methods that are safe to repeat are retried in that case.
+exports.IDEMPOTENT_METHODS = ["get", "head", "options", "put", "delete"];
 exports.BASE_ASANA_URL = "https://app.asana.com/api/1.0";
 exports.PROJECTS_URL = "/projects/";
 exports.TASKS_URL = "/tasks/";
@@ -16346,10 +16370,13 @@ const RELEASE_SECTION_BY_BASE = {
     production: exports.RELEASED,
 };
 const STAGED_RELEASE_REPOS = ["aaardvark-app", "blinkmetrics-app"];
+// undefined means "merged, but nothing shipped" - a stacked PR landing on
+// another feature branch of a staged-release repo. Those tasks keep their
+// section; only a merge into a real release branch moves them.
 const sectionForMerge = (repoName, baseRef) => {
     const shortName = repoName.split("/").pop() || repoName;
     if (STAGED_RELEASE_REPOS.includes(shortName)) {
-        return RELEASE_SECTION_BY_BASE[baseRef] || exports.DONE;
+        return RELEASE_SECTION_BY_BASE[baseRef];
     }
     return exports.DONE;
 };
@@ -16666,8 +16693,8 @@ exports.stripQuotesAndArrows = stripQuotesAndArrows;
 // Convert markdown images/hyperlinks/bare links into Asana anchor tags.
 const linkifyBody = (body) => {
     let commentBody = body;
-    const links = commentBody.match(/\bhttps?:\/\/\S+[\w|\/]/gi) || [];
-    links.forEach((link) => {
+    const links = commentBody.match(/\bhttps?:\/\/\S+[\w|/]/gi) || [];
+    for (const link of links) {
         const linkRegex = link.replace(/\//gi, "\\/");
         const linkSite = link.replace(/.+\/\/|www.|\..+/g, "");
         const capitalLinkSite = linkSite.charAt(0).toUpperCase() + linkSite.slice(1);
@@ -16692,7 +16719,7 @@ const linkifyBody = (body) => {
             const href = link.replace(/\/$/, "");
             commentBody = commentBody.replace(defaultRegex, `<a href="${href}"> 🔗 ${capitalLinkSite} Link 🔗 </a>`);
         }
-    });
+    }
     return commentBody;
 };
 exports.linkifyBody = linkifyBody;
@@ -16963,11 +16990,15 @@ const handleComment = (event) => __awaiter(void 0, void 0, void 0, function* () 
     }
     else {
         // pull_request_review_comment: inline code comment with file context.
+        // File-level comments carry no line number, so name only the file.
         const files = event.commentPath.split("/");
         const fileName = files[files.length - 1];
-        commentText = `<body> ${userHTML} is requesting the following <a href="${event.commentUrl}">changes</a> on ${fileName} (Line ${event.commentLine}):\n\n${body} </body>`;
+        const location = event.commentLine
+            ? `${fileName} (Line ${event.commentLine})`
+            : fileName;
+        commentText = `<body> ${userHTML} is requesting the following <a href="${event.commentUrl}">changes</a> on ${location}:\n\n${body} </body>`;
         if (event.commentInReplyTo) {
-            commentText = `<body> ${userHTML} <a href="${event.commentUrl}">replied</a> on ${fileName} (Line ${event.commentLine}):\n\n${body} </body>`;
+            commentText = `<body> ${userHTML} <a href="${event.commentUrl}">replied</a> on ${location}:\n\n${body} </body>`;
         }
     }
     (0, core_1.setOutput)("commentBody", JSON.stringify(body));
@@ -17021,9 +17052,19 @@ const SECTIONS = __importStar(__nccwpck_require__(6081));
 const asana = __importStar(__nccwpck_require__(7369));
 const utils = __importStar(__nccwpck_require__(8541));
 const comment_1 = __nccwpck_require__(32);
-const moveTasksForDraft = (event) => __awaiter(void 0, void 0, void 0, function* () {
+// No live PR to track (draft, or closed without merging) means the task is
+// back with its author.
+const moveTasksToInProgress = (event) => __awaiter(void 0, void 0, void 0, function* () {
     for (const taskId of event.taskIds) {
         yield asana.moveTaskToSection(taskId, SECTIONS.IN_PROGRESS, SECTIONS.PROTECTED_FROM_DRAFT);
+    }
+});
+const moveTasksToReview = (event, activeTier) => __awaiter(void 0, void 0, void 0, function* () {
+    for (const taskId of event.taskIds) {
+        yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
+        for (const reviewer of activeTier) {
+            yield asana.addRequestedReview(taskId, reviewer, event.prUrl);
+        }
     }
 });
 const HANDLED_ACTIONS = [
@@ -17038,13 +17079,17 @@ const handlePullRequest = (event) => __awaiter(void 0, void 0, void 0, function*
     if (!HANDLED_ACTIONS.includes(event.action))
         return;
     const activeTier = utils.pickReviewerTier(event.requestedReviewers);
-    // Draft rule: a draft PR means the task is being worked on.
+    // Opened and reopened both mirror whatever state the PR is in right now:
+    // draft means the task is being worked on, ready means it is up for review.
     // (Falls through so the "PR is open" comment still posts.)
-    if (event.action === "opened" && event.isDraft) {
-        yield moveTasksForDraft(event);
+    if (event.action === "opened" || event.action === "reopened") {
+        if (event.isDraft)
+            yield moveTasksToInProgress(event);
+        else
+            yield moveTasksToReview(event, activeTier);
     }
     if (event.action === "converted_to_draft") {
-        yield moveTasksForDraft(event);
+        yield moveTasksToInProgress(event);
         // Pending review requests are stale once the author pulls the PR back.
         for (const taskId of event.taskIds) {
             yield asana.deleteReviewSubtasks(taskId);
@@ -17053,12 +17098,7 @@ const handlePullRequest = (event) => __awaiter(void 0, void 0, void 0, function*
     }
     // Only a ready-for-review PR puts its task in Testing / Review.
     if (event.action === "ready_for_review") {
-        for (const taskId of event.taskIds) {
-            yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
-            for (const reviewer of activeTier) {
-                yield asana.addRequestedReview(taskId, reviewer, event.prUrl);
-            }
-        }
+        yield moveTasksToReview(event, activeTier);
         return;
     }
     if (event.action === "review_requested") {
@@ -17076,12 +17116,22 @@ const handlePullRequest = (event) => __awaiter(void 0, void 0, void 0, function*
         }
         return;
     }
-    if (event.action === "closed" && event.prMerged) {
-        const targetSection = SECTIONS.sectionForMerge(event.repoFullName, event.prBaseRef);
+    // Either way a closed PR leaves no review outstanding, so the pending
+    // approval subtasks go regardless of how it closed.
+    if (event.action === "closed") {
+        const targetSection = event.prMerged
+            ? SECTIONS.sectionForMerge(event.repoFullName, event.prBaseRef)
+            : SECTIONS.IN_PROGRESS;
         for (const taskId of event.taskIds) {
             const approvalSubtasks = yield asana.getAllApprovalSubtasks(taskId, asana.ottoUser());
             yield asana.deleteApprovalTasks(approvalSubtasks);
-            yield asana.moveTaskToSection(taskId, targetSection);
+            // A merge into a non-release branch ships nothing, so it moves nothing.
+            if (!targetSection)
+                continue;
+            yield asana.moveTaskToSection(taskId, targetSection, 
+            // Abandoning a PR must not drag a task out of Blocked or a release
+            // column; a merge is allowed to move the task anywhere.
+            event.prMerged ? undefined : SECTIONS.PROTECTED_FROM_DRAFT);
             // Tasks are never auto-completed: they stay open until verified in
             // production and closed by a human.
         }
@@ -17160,6 +17210,7 @@ const utils = __importStar(__nccwpck_require__(8541));
 const format = __importStar(__nccwpck_require__(6264));
 const comment_1 = __nccwpck_require__(32);
 const SUBTASK_REVIEW_STATES = ["approved", "pending", "changes_requested"];
+const DEFINITIVE_REVIEW_STATES = ["CHANGES_REQUESTED", "APPROVED", "DISMISSED"];
 // A PR is fully approved only when every tier has signed off; approvals
 // cascade PEER_DEV -> DEV -> QA, creating the next tier's subtasks as the
 // previous tier completes.
@@ -17167,14 +17218,16 @@ const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, funct
     const githubUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}${REQUESTS.REVIEWS_URL}`;
     const reviewsResponse = yield githubAxios_1.default.get(githubUrl);
     const reviews = reviewsResponse.data;
-    // Latest definitive review (approved / changes requested) per reviewer.
+    // Latest definitive review per reviewer. A dismissed approval has to stay
+    // in the tally as "no longer approved" - dropping the reviewer entirely
+    // would let their vacated slot read as satisfied.
     const latestReviews = {};
     for (const review of reviews) {
         const githubName = review.user.login;
         const reviewerObj = utils.findUserByGithubName(githubName);
         if (!reviewerObj)
             continue;
-        if (review.state !== "CHANGES_REQUESTED" && review.state !== "APPROVED")
+        if (!DEFINITIVE_REVIEW_STATES.includes(review.state))
             continue;
         if (!latestReviews[githubName] ||
             latestReviews[githubName].timestamp < review.submitted_at) {
@@ -17204,12 +17257,15 @@ const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, funct
         const review = latestReviews[githubName];
         if (review.state === "APPROVED")
             continue;
+        // Only the three human tiers gate the cascade. Bots review every PR
+        // here, and bucketing them into whichever tier the fallback happened to
+        // land on made their verdict silently block a tier they never sat in.
         const team = review.info.team;
         if (team === "PEER_DEV")
             approvedByPeer = false;
         else if (team === "DEV")
             approvedByDev = false;
-        else
+        else if (team === "QA")
             approvedByQa = false;
     }
     const devReviewers = event.requestedReviewers.filter((reviewer) => reviewer.team === "DEV");
@@ -17231,10 +17287,12 @@ const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, funct
             }
         }
     }
-    // With no known reviews every tier flag stays true by default, so an
-    // approval from a reviewer missing from the user map must not promote.
-    const hasKnownApproval = Object.values(latestReviews).some((review) => review.state === "APPROVED");
-    if (hasKnownApproval && approvedByPeer && approvedByDev && approvedByQa) {
+    // With no reviews at all every tier flag stays true by default, so the
+    // promotion needs positive evidence: an approval from someone who actually
+    // sits in a review tier. A bot's or an unmapped user's approval is not a
+    // human sign-off and can never promote on its own.
+    const hasTierApproval = Object.values(latestReviews).some((review) => review.state === "APPROVED" && utils.isReviewTier(review.info));
+    if (hasTierApproval && approvedByPeer && approvedByDev && approvedByQa) {
         for (const taskId of event.taskIds) {
             yield asana.moveTaskToSection(taskId, SECTIONS.APPROVED);
         }
@@ -17264,6 +17322,13 @@ const handleReview = (event) => __awaiter(void 0, void 0, void 0, function* () {
             yield asana.setTaskIncomplete(taskId);
         }
     }
+    // A dismissed approval un-approves the PR, so the task cannot stay in
+    // Approved waiting on a sign-off that no longer exists.
+    if (event.action === "dismissed" && !event.isDraft) {
+        for (const taskId of event.taskIds) {
+            yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, SECTIONS.PROTECTED_FROM_DEMOTION);
+        }
+    }
     // The ready-for-review invariant extends to approvals: reviews submitted
     // on a draft PR never cascade or promote the task.
     let cascadeFollowers = [];
@@ -17289,7 +17354,9 @@ const handleReview = (event) => __awaiter(void 0, void 0, void 0, function* () {
     switch (event.reviewState) {
         case "commented":
         case "changes_requested":
-            if (!body || event.action === "edited")
+            // An edited review still posts: postCommentToTasks matches the story by
+            // review URL and updates it in place.
+            if (!body)
                 return;
             commentText = `<body> ${userHTML} is requesting the following <a href="${event.commentUrl}">changes</a>:\n\n${body} </body>`;
             if (event.reviewState === "commented") {
@@ -17358,13 +17425,22 @@ const asanaAxios = axios_1.default.create({
 });
 (0, axios_retry_1.default)(asanaAxios, {
     retries: REQUESTS.RETRIES,
-    retryDelay: (retryCount) => retryCount * REQUESTS.RETRY_DELAY,
+    retryDelay: (retryCount, error) => {
+        var _a, _b;
+        const retryAfter = Number((_b = (_a = error === null || error === void 0 ? void 0 : error.response) === null || _a === void 0 ? void 0 : _a.headers) === null || _b === void 0 ? void 0 : _b["retry-after"]);
+        if (retryAfter > 0)
+            return Math.min(retryAfter * 1000, REQUESTS.MAX_RETRY_DELAY);
+        return retryCount * REQUESTS.RETRY_DELAY;
+    },
     retryCondition: (error) => {
-        var _a;
+        var _a, _b;
         const status = (_a = error === null || error === void 0 ? void 0 : error.response) === null || _a === void 0 ? void 0 : _a.status;
+        // Retrying a POST that timed out after Asana already applied it would
+        // duplicate a comment or an approval subtask.
         if (!status)
-            return true;
-        return String(status).startsWith("50");
+            return REQUESTS.IDEMPOTENT_METHODS.includes((((_b = error === null || error === void 0 ? void 0 : error.config) === null || _b === void 0 ? void 0 : _b.method) || "").toLowerCase());
+        // 429 is Asana's rate limit and is exactly what a retry is for.
+        return status === 429 || String(status).startsWith("50");
     },
 });
 exports["default"] = asanaAxios;
@@ -17418,13 +17494,21 @@ const githubAxios = axios_1.default.create({
 });
 (0, axios_retry_1.default)(githubAxios, {
     retries: REQUESTS.RETRIES,
-    retryDelay: (retryCount) => retryCount * REQUESTS.RETRY_DELAY,
+    retryDelay: (retryCount, error) => {
+        var _a, _b;
+        const retryAfter = Number((_b = (_a = error === null || error === void 0 ? void 0 : error.response) === null || _a === void 0 ? void 0 : _a.headers) === null || _b === void 0 ? void 0 : _b["retry-after"]);
+        if (retryAfter > 0)
+            return Math.min(retryAfter * 1000, REQUESTS.MAX_RETRY_DELAY);
+        return retryCount * REQUESTS.RETRY_DELAY;
+    },
     retryCondition: (error) => {
-        var _a;
+        var _a, _b;
         const status = (_a = error === null || error === void 0 ? void 0 : error.response) === null || _a === void 0 ? void 0 : _a.status;
+        // Retrying a PR-description PATCH that already landed would append the
+        // sandbox block twice.
         if (!status)
-            return true;
-        return String(status).startsWith("50");
+            return REQUESTS.IDEMPOTENT_METHODS.includes((((_b = error === null || error === void 0 ? void 0 : error.config) === null || _b === void 0 ? void 0 : _b.method) || "").toLowerCase());
+        return status === 429 || String(status).startsWith("50");
     },
 });
 exports["default"] = githubAxios;
@@ -17549,7 +17633,7 @@ var __importStar = (this && this.__importStar) || function (mod) {
     return result;
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.pickReviewerTier = exports.extractAsanaTaskIds = exports.findUserByGithubName = exports.isAxiosError = exports.validateTrigger = void 0;
+exports.pickReviewerTier = exports.isReviewTier = exports.REVIEW_TIERS = exports.extractAsanaTaskIds = exports.findUserByGithubName = exports.isAxiosError = exports.validateTrigger = void 0;
 const ERRORS = __importStar(__nccwpck_require__(5802));
 const TRIGGERS = __importStar(__nccwpck_require__(4088));
 const users_1 = __nccwpck_require__(9101);
@@ -17558,7 +17642,7 @@ const validateTrigger = (eventName) => {
         throw new Error(ERRORS.WRONG_TRIGGER);
 };
 exports.validateTrigger = validateTrigger;
-const isAxiosError = (e) => e.isAxiosError;
+const isAxiosError = (e) => Boolean(e === null || e === void 0 ? void 0 : e.isAxiosError);
 exports.isAxiosError = isAxiosError;
 const findUserByGithubName = (githubName) => users_1.users.find((user) => user.githubName === githubName);
 exports.findUserByGithubName = findUserByGithubName;
@@ -17573,6 +17657,12 @@ const extractAsanaTaskIds = (description) => {
     return [...new Set(ids)];
 };
 exports.extractAsanaTaskIds = extractAsanaTaskIds;
+// The three human review tiers. Any other team (BOT) is not a review tier:
+// its verdict is tracked on the CI subtask and the changes-requested path,
+// never folded into the tier gating.
+exports.REVIEW_TIERS = ["PEER_DEV", "DEV", "QA"];
+const isReviewTier = (user) => Boolean(user && exports.REVIEW_TIERS.includes(user.team));
+exports.isReviewTier = isReviewTier;
 // Review responsibility cascades PEER_DEV -> DEV -> QA: only the
 // highest-priority tier present among the requested reviewers is active.
 const pickReviewerTier = (reviewers) => {
