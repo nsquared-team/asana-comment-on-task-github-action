@@ -31,9 +31,9 @@ stateDiagram-v2
 | Ready for review / review requested | → Testing / Review | Creates a pending "Review" approval subtask for the active reviewer tier. Draft PRs are ignored. |
 | CI rejected (`comment-text: rejected`) | → Next | Pending review subtasks are deleted; the "Automated CI Testing" subtask records the verdict. Tasks in In Progress or Released sections stay put. |
 | CI approved after a rejection | → Testing / Review | Only when the PR is not a draft; review subtasks are recreated. |
-| Review: changes requested | → Next | Task is also reopened (marked incomplete). |
+| Review: changes requested | → Next | Task is also reopened (marked incomplete). Tasks in In Progress or Released sections stay put. |
 | Review: comment | *(no move)* | Comment reviews only mirror the comment to Asana. |
-| Review: approved by all tiers | → Approved | Approval cascades PEER_DEV → DEV → QA; the next tier's subtasks are created as the previous tier finishes. |
+| Review: approved by all tiers | → Approved | Approval cascades PEER_DEV → DEV → QA; the next tier's subtasks are created as the previous tier finishes. Approvals on draft PRs, or from users missing from the user map, never promote. |
 | Merged | → release section | `aaardvark-app` / `blinkmetrics-app`: `master` → *Released in Alpha*, `beta` → *Released in Beta*, `production` → *Released*. Every other repo: *Done*. Tasks are **never auto-completed**. |
 | Merge-conflict comment from otto | → Next | Task reopened. |
 

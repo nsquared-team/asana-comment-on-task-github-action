@@ -289,7 +289,7 @@ describe("reviews", () => {
     });
   });
 
-  test("unknown reviewer does not crash the sync", async () => {
+  test("unknown reviewer does not crash the sync and never promotes to Approved", async () => {
     mockAsana();
     githubGet.mockResolvedValue({ data: [] });
     await expect(
@@ -305,6 +305,70 @@ describe("reviews", () => {
         })
       )
     ).resolves.not.toThrow();
+    expect(movesTo("Approved")).toHaveLength(0);
+  });
+
+  test("a known approval that completes every tier moves the task to Approved", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({
+      data: [
+        {
+          user: { login: "MariamElZaatari" },
+          state: "APPROVED",
+          submitted_at: "2026-08-01T00:00:00Z",
+        },
+      ],
+    });
+    await handleReview(
+      baseEvent({
+        eventName: "pull_request_review",
+        action: "submitted",
+        reviewState: "approved",
+        username: "MariamElZaatari",
+        commentUrl: "https://github.com/r/pull/42#review-4",
+      })
+    );
+    expect(movesTo("Approved")).toHaveLength(1);
+  });
+
+  test("an approval on a draft PR never cascades or promotes", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({
+      data: [
+        {
+          user: { login: "MariamElZaatari" },
+          state: "APPROVED",
+          submitted_at: "2026-08-01T00:00:00Z",
+        },
+      ],
+    });
+    await handleReview(
+      baseEvent({
+        eventName: "pull_request_review",
+        action: "submitted",
+        reviewState: "approved",
+        username: "MariamElZaatari",
+        isDraft: true,
+        commentUrl: "https://github.com/r/pull/42#review-5",
+      })
+    );
+    expect(githubGet).not.toHaveBeenCalled();
+    expect(movesTo("Approved")).toHaveLength(0);
+  });
+
+  test("changes_requested does not demote a task that is In Progress", async () => {
+    mockAsana({ taskSection: "In Progress" });
+    await handleReview(
+      baseEvent({
+        eventName: "pull_request_review",
+        action: "submitted",
+        reviewState: "changes_requested",
+        reviewBody: "please fix",
+        rawCommentBody: "please fix",
+        commentUrl: "https://github.com/r/pull/42#review-6",
+      })
+    );
+    expect(movesTo("Next")).toHaveLength(0);
   });
 });
 

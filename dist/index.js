@@ -17231,7 +17231,10 @@ const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, funct
             }
         }
     }
-    if (approvedByPeer && approvedByDev && approvedByQa) {
+    // With no known reviews every tier flag stays true by default, so an
+    // approval from a reviewer missing from the user map must not promote.
+    const hasKnownApproval = Object.values(latestReviews).some((review) => review.state === "APPROVED");
+    if (hasKnownApproval && approvedByPeer && approvedByDev && approvedByQa) {
         for (const taskId of event.taskIds) {
             yield asana.moveTaskToSection(taskId, SECTIONS.APPROVED);
         }
@@ -17257,12 +17260,16 @@ const handleReview = (event) => __awaiter(void 0, void 0, void 0, function* () {
         event.reviewState === "changes_requested") {
         for (const taskId of event.taskIds) {
             yield asana.deleteReviewSubtasks(taskId);
-            yield asana.moveTaskToSection(taskId, SECTIONS.NEXT, SECTIONS.RELEASED_SECTIONS);
+            yield asana.moveTaskToSection(taskId, SECTIONS.NEXT, SECTIONS.PROTECTED_FROM_DEMOTION);
             yield asana.setTaskIncomplete(taskId);
         }
     }
+    // The ready-for-review invariant extends to approvals: reviews submitted
+    // on a draft PR never cascade or promote the task.
     let cascadeFollowers = [];
-    if (event.action === "submitted" && event.reviewState === "approved") {
+    if (event.action === "submitted" &&
+        event.reviewState === "approved" &&
+        !event.isDraft) {
         cascadeFollowers = yield handleApprovalCascade(event);
     }
     // Followers: reviewer, active tier, mentioned users, cascade additions.
