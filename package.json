@@ -7,7 +7,9 @@
     "prepare": "husky install",
     "build": "tsc",
     "test": "jest",
-    "lint": "eslint src/**/*.ts --fix",
+    "lint": "eslint \"src/**/*.ts\" --fix",
+    "lint:check": "eslint \"src/**/*.ts\"",
+    "typecheck": "tsc --noEmit",
     "package": "ncc build --source-map --license licenses.txt",
     "test:coverage": "jest --collectCoverage=true"
   },

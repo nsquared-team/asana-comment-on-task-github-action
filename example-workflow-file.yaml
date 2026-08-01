@@ -1,5 +1,9 @@
 # Minimal PR-activity sync. The fleet-wide canonical workflow lives in the
 # devops repo (repo-commons/.github/workflows/asana.yaml) — prefer that one.
+#
+# `edited` is deliberately absent: the CI-status mode patches the PR body
+# itself, so subscribing to it would have the action re-trigger on its own
+# edits and move tasks on every sandbox-block refresh.
 on:
   pull_request:
     types:
@@ -10,10 +14,9 @@ on:
         ready_for_review,
         converted_to_draft,
         review_requested,
-        edited,
       ]
   pull_request_review:
-    types: [submitted]
+    types: [submitted, dismissed]
   issue_comment:
     types: [created, edited, deleted]
   pull_request_review_comment:
