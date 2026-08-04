@@ -17222,6 +17222,7 @@ const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, funct
     // in the tally as "no longer approved" - dropping the reviewer entirely
     // would let their vacated slot read as satisfied.
     const latestReviews = {};
+    let lastChangesRequestedAt = "";
     for (const review of reviews) {
         const githubName = review.user.login;
         const reviewerObj = utils.findUserByGithubName(githubName);
@@ -17229,6 +17230,10 @@ const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, funct
             continue;
         if (!DEFINITIVE_REVIEW_STATES.includes(review.state))
             continue;
+        if (review.state === "CHANGES_REQUESTED" &&
+            review.submitted_at > lastChangesRequestedAt) {
+            lastChangesRequestedAt = review.submitted_at;
+        }
         if (!latestReviews[githubName] ||
             latestReviews[githubName].timestamp < review.submitted_at) {
             latestReviews[githubName] = {
@@ -17236,6 +17241,17 @@ const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, funct
                 timestamp: review.submitted_at,
                 info: reviewerObj,
             };
+        }
+    }
+    // An approval vouches only for the code that existed when it was given.
+    // Once someone requests changes the PR is being revised, so every approval
+    // that predates the newest standing changes-request (otto's included)
+    // drops out of the tally until its reviewer approves again.
+    for (const githubName of Object.keys(latestReviews)) {
+        const review = latestReviews[githubName];
+        if (review.state === "APPROVED" &&
+            review.timestamp <= lastChangesRequestedAt) {
+            review.state = "STALE_APPROVED";
         }
     }
     // A reviewer still in requested_reviewers has a re-requested (pending)

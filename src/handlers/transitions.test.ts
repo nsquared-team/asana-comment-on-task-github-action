@@ -211,6 +211,27 @@ describe("ready for review", () => {
     );
     expect(asanaPost).not.toHaveBeenCalled();
   });
+
+  test("review_requested creates a subtask only for the event's reviewer", async () => {
+    mockAsana();
+    const amin = {
+      githubName: "aminabdulkhalek",
+      asanaId: "1202393076412167",
+      team: "PEER_DEV",
+    };
+    await handlePullRequest(
+      baseEvent({
+        action: "review_requested",
+        requestedReviewers: [PEER, amin],
+        eventReviewer: amin,
+      })
+    );
+    const subtaskCreates = asanaPost.mock.calls.filter(([url]: [string]) =>
+      url.includes("/tasks/111/subtasks")
+    );
+    expect(subtaskCreates).toHaveLength(1);
+    expect(subtaskCreates[0][1].data.assignee).toBe(amin.asanaId);
+  });
 });
 
 describe("CI status", () => {
@@ -370,6 +391,46 @@ describe("reviews", () => {
     );
     expect(githubGet).not.toHaveBeenCalled();
     expect(movesTo("Approved")).toHaveLength(0);
+  });
+
+  test("otto requesting changes demotes the task, reopens it, and clears pending review subtasks", async () => {
+    mockAsana({
+      subtasks: [
+        {
+          gid: "rev-sub-1",
+          name: "Review",
+          resource_subtype: "approval",
+          completed: false,
+          created_by: { gid: OTTO_ASANA_ID },
+          assignee: { gid: "dev-asana-id" },
+        },
+        {
+          gid: "ci-sub-1",
+          name: "Automated CI Testing",
+          resource_subtype: "approval",
+          completed: false,
+          created_by: { gid: OTTO_ASANA_ID },
+          assignee: { gid: OTTO_ASANA_ID },
+        },
+      ],
+    });
+    await handleReview(
+      baseEvent({
+        eventName: "pull_request_review",
+        action: "submitted",
+        reviewState: "changes_requested",
+        username: "otto-bot-git",
+        reviewBody: "issues found",
+        rawCommentBody: "issues found",
+        commentUrl: "https://github.com/r/pull/42#review-7",
+      })
+    );
+    expect(movesTo("Next")).toHaveLength(1);
+    expect(asanaPut).toHaveBeenCalledWith("/tasks/111", {
+      data: { completed: false },
+    });
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/rev-sub-1");
+    expect(asanaDelete).not.toHaveBeenCalledWith("/tasks/ci-sub-1");
   });
 
   test("changes_requested does not demote a task that is In Progress", async () => {
@@ -569,6 +630,31 @@ describe("bots are not a review tier", () => {
     });
     await handleReview(approvalBy(PEER.githubName));
     expect(movesTo("Approved")).toHaveLength(1);
+  });
+
+  test("an approval that predates otto's changes-request no longer counts", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({
+      data: [
+        {
+          user: { login: PEER.githubName },
+          state: "APPROVED",
+          submitted_at: "2026-08-01T00:00:00Z",
+        },
+        {
+          user: { login: "otto-bot-git" },
+          state: "CHANGES_REQUESTED",
+          submitted_at: "2026-08-01T01:00:00Z",
+        },
+        {
+          user: { login: "otto-bot-git" },
+          state: "APPROVED",
+          submitted_at: "2026-08-01T02:00:00Z",
+        },
+      ],
+    });
+    await handleReview(approvalBy("otto-bot-git"));
+    expect(movesTo("Approved")).toHaveLength(0);
   });
 
   test("otto still pending neither pings QA nor blocks the human tiers", async () => {
