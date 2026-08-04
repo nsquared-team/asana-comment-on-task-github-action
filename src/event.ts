@@ -21,6 +21,7 @@ export interface SyncEvent {
   rawCommentBody: string;
   commentPath: string;
   commentLine?: number;
+  commentSubjectType: string;
   commentInReplyTo?: number;
   username?: string;
   requestedReviewers: any[];
@@ -61,6 +62,10 @@ export const buildEvent = (context: any): SyncEvent => {
     rawCommentBody: payload.comment?.body || payload.review?.body || "",
     commentPath: payload.comment?.path || "",
     commentLine: payload.comment?.original_line,
+    // "file" for a whole-file review comment, "line" otherwise. GitHub still
+    // reports original_line as 1 on a file-level comment, so this is the only
+    // field that tells the two apart.
+    commentSubjectType: payload.comment?.subject_type || "",
     commentInReplyTo: payload.comment?.in_reply_to_id,
     username,
     requestedReviewers,

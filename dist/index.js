@@ -16590,7 +16590,7 @@ const INPUTS = __importStar(__nccwpck_require__(2120));
 const utils = __importStar(__nccwpck_require__(8541));
 exports.CI_STATUSES = ["approved", "rejected", "edit_pr_description"];
 const buildEvent = (context) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w;
     const payload = context.payload;
     const pullRequest = payload.pull_request || payload.issue;
     const commentText = (0, core_1.getInput)(INPUTS.COMMENT_TEXT);
@@ -16617,7 +16617,11 @@ const buildEvent = (context) => {
         rawCommentBody: ((_r = payload.comment) === null || _r === void 0 ? void 0 : _r.body) || ((_s = payload.review) === null || _s === void 0 ? void 0 : _s.body) || "",
         commentPath: ((_t = payload.comment) === null || _t === void 0 ? void 0 : _t.path) || "",
         commentLine: (_u = payload.comment) === null || _u === void 0 ? void 0 : _u.original_line,
-        commentInReplyTo: (_v = payload.comment) === null || _v === void 0 ? void 0 : _v.in_reply_to_id,
+        // "file" for a whole-file review comment, "line" otherwise. GitHub still
+        // reports original_line as 1 on a file-level comment, so this is the only
+        // field that tells the two apart.
+        commentSubjectType: ((_v = payload.comment) === null || _v === void 0 ? void 0 : _v.subject_type) || "",
+        commentInReplyTo: (_w = payload.comment) === null || _w === void 0 ? void 0 : _w.in_reply_to_id,
         username,
         requestedReviewers,
         eventReviewer: payload.requested_reviewer
@@ -16990,10 +16994,14 @@ const handleComment = (event) => __awaiter(void 0, void 0, void 0, function* () 
     }
     else {
         // pull_request_review_comment: inline code comment with file context.
-        // File-level comments carry no line number, so name only the file.
+        // A file-level comment belongs to no line, so name only the file. GitHub
+        // reports original_line as 1 for those rather than leaving it empty, so
+        // the subject type decides - a line number alone cannot tell a file-level
+        // comment apart from one genuinely on the first line.
         const files = event.commentPath.split("/");
         const fileName = files[files.length - 1];
-        const location = event.commentLine
+        const isFileLevel = event.commentSubjectType === "file";
+        const location = !isFileLevel && event.commentLine
             ? `${fileName} (Line ${event.commentLine})`
             : fileName;
         commentText = `<body> ${userHTML} is requesting the following <a href="${event.commentUrl}">changes</a> on ${location}:\n\n${body} </body>`;
