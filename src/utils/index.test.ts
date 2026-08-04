@@ -1,46 +1,83 @@
 import * as utils from "./index";
 import * as ERRORS from "../constants/errors";
-import * as core from "@actions/core";
-import { ALLOWED_PROJECTS, BLOCKED_PROJECTS } from "../constants/inputs";
-
-test("getProjectsFromInput should return array of project gids", () => {
-  jest.spyOn(core, "getInput").mockImplementation((type: string) => {
-    switch (type) {
-      case ALLOWED_PROJECTS:
-        return "1\n2\n3";
-      case BLOCKED_PROJECTS:
-        return "";
-      default:
-        return "";
-    }
-  });
-
-  expect(utils.getProjectsFromInput(ALLOWED_PROJECTS)).toEqual(["1", "2", "3"]);
-  expect(utils.getProjectsFromInput(BLOCKED_PROJECTS)).toEqual([]);
-});
 
 describe("validateTrigger", () => {
-  test("should throw an error if wrong eventType was provided", () => {
+  test("throws for unsupported events, including push", () => {
     expect(() => utils.validateTrigger("push")).toThrow(ERRORS.WRONG_TRIGGER);
+    expect(() => utils.validateTrigger("workflow_dispatch")).toThrow(
+      ERRORS.WRONG_TRIGGER
+    );
   });
 
-  test("should not throw an error if wrong eventType was provided", () => {
+  test("accepts the supported events", () => {
     expect(() => utils.validateTrigger("pull_request")).not.toThrow();
     expect(() => utils.validateTrigger("pull_request_review")).not.toThrow();
     expect(() =>
       utils.validateTrigger("pull_request_review_comment")
     ).not.toThrow();
+    expect(() => utils.validateTrigger("issue_comment")).not.toThrow();
   });
 });
 
-describe("validateProjectLists", () => {
-  test("should throw an error if both projects lists are not empty", () => {
-    expect(() => utils.validateProjectLists(["1"], ["1"])).toThrow(
-      ERRORS.BOTH_PROJECT_LISTS_ARE_NOT_EMPTY
-    );
+describe("extractAsanaTaskIds", () => {
+  test("extracts ids from task/ and /0/ url formats and dedupes", () => {
+    const description = [
+      "Task: https://app.asana.com/0/1202711048810575/1234567890/f",
+      "Also https://app.asana.com/1/123/project/456/task/9876543210",
+      "Dup https://app.asana.com/0/1202711048810575/1234567890",
+    ].join("\n");
+    expect(utils.extractAsanaTaskIds(description)).toEqual([
+      "1234567890",
+      "9876543210",
+    ]);
   });
-  test("should not throw an error if only one projects list is not empty", () => {
-    expect(() => utils.validateProjectLists(["1"], [])).not.toThrow();
-    expect(() => utils.validateProjectLists([], ["1"])).not.toThrow();
+
+  test("returns empty for no links or empty body", () => {
+    expect(utils.extractAsanaTaskIds(undefined)).toEqual([]);
+    expect(utils.extractAsanaTaskIds("no links here")).toEqual([]);
+  });
+});
+
+describe("pickReviewerTier", () => {
+  const peer = { githubName: "p", team: "PEER_DEV" };
+  const dev = { githubName: "d", team: "DEV" };
+  const qa = { githubName: "q", team: "QA" };
+
+  test("peer devs outrank dev, dev outranks qa", () => {
+    expect(utils.pickReviewerTier([qa, dev, peer])).toEqual([peer]);
+    expect(utils.pickReviewerTier([qa, dev])).toEqual([dev]);
+    expect(utils.pickReviewerTier([qa])).toEqual([qa]);
+  });
+
+  test("ignores unknown (undefined) reviewers instead of crashing", () => {
+    expect(utils.pickReviewerTier([undefined, qa])).toEqual([qa]);
+    expect(utils.pickReviewerTier([])).toEqual([]);
+  });
+});
+
+describe("findUserByGithubName", () => {
+  test("returns undefined for unknown users", () => {
+    expect(utils.findUserByGithubName("dependabot[bot]")).toBeUndefined();
+    expect(utils.findUserByGithubName(undefined)).toBeUndefined();
+  });
+});
+
+describe("isReviewTier", () => {
+  test("only the three human tiers count as a review tier", () => {
+    expect(utils.isReviewTier({ team: "PEER_DEV" })).toBe(true);
+    expect(utils.isReviewTier({ team: "DEV" })).toBe(true);
+    expect(utils.isReviewTier({ team: "QA" })).toBe(true);
+    expect(utils.isReviewTier({ team: "BOT" })).toBe(false);
+    expect(utils.isReviewTier(undefined)).toBe(false);
+  });
+});
+
+describe("isAxiosError", () => {
+  test("a non-object throw returns false instead of throwing in the catch", () => {
+    expect(() => utils.isAxiosError(null)).not.toThrow();
+    expect(utils.isAxiosError(null)).toBe(false);
+    expect(utils.isAxiosError(undefined)).toBe(false);
+    expect(utils.isAxiosError(new Error("plain"))).toBe(false);
+    expect(utils.isAxiosError({ isAxiosError: true })).toBe(true);
   });
 });

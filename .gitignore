@@ -106,3 +106,5 @@ typings/
 .tern-port
 **/.DS_Store
 .DS_Store
+# compiled output (tsc emits in place)
+src/**/*.js

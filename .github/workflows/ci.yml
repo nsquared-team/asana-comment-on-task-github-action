@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    name: Test, typecheck, and verify the committed bundle
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      # Not `npm run lint`: that carries --fix, which silently rewrites files
+      # and exits 0 on anything auto-fixable, so it gates nothing.
+      - run: npm run lint:check
+
+      # dist/index.js is what the runner actually executes, so a stale bundle
+      # ships behaviour that no longer matches src/. Rebuild and fail if the
+      # committed output differs.
+      - name: Verify dist/ is in sync with src/
+        run: |
+          npm run package
+          if ! git diff --exit-code --stat dist/; then
+            echo "::error::dist/ is out of date - run 'npm run package' and commit the result."
+            exit 1
+          fi
