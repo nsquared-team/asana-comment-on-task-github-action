@@ -3,6 +3,7 @@ import githubAxios from "../requests/githubAxios";
 import { handlePullRequest } from "./pullRequest";
 import { handleCiStatus } from "./ci";
 import { handleReview } from "./review";
+import { handleComment } from "./comment";
 import { SyncEvent } from "../event";
 
 jest.mock("@actions/core", () => ({
@@ -112,6 +113,7 @@ const baseEvent = (overrides: Partial<SyncEvent> = {}): SyncEvent => ({
   rawCommentBody: "",
   commentPath: "",
   commentLine: undefined,
+  commentSubjectType: "",
   commentInReplyTo: undefined,
   username: "hsein-bitar",
   requestedReviewers: [],
@@ -809,5 +811,44 @@ describe("section protection spans every project the task is in", () => {
     mockAsana({ taskSections: ["Next", "Next"] });
     await handlePullRequest(baseEvent({ action: "opened", isDraft: true }));
     expect(movesTo("In Progress")).toHaveLength(2);
+  });
+});
+
+describe("review comment location names a line only when there is one", () => {
+  const reviewComment = (overrides: Partial<SyncEvent> = {}) =>
+    baseEvent({
+      eventName: "pull_request_review_comment",
+      action: "created",
+      commentPath: ".github/workflows/asana.yaml",
+      commentUrl:
+        "https://github.com/nsquared-team/some-repo/pull/42#discussion_r1",
+      rawCommentBody: "a note",
+      ...overrides,
+    });
+
+  const postedBody = () =>
+    asanaPost.mock.calls
+      .map(([, payload]: [string, any]) => payload?.data?.html_text)
+      .filter(Boolean)
+      .at(-1) as string;
+
+  test("a file-level comment names only the file", async () => {
+    mockAsana();
+    // GitHub reports original_line as 1 on a file-level comment rather than
+    // leaving it empty, so a truthiness check on the line number labels the
+    // comment "(Line 1)" and points the reader at a line it is not on.
+    await handleComment(
+      reviewComment({ commentSubjectType: "file", commentLine: 1 })
+    );
+    expect(postedBody()).toContain("on asana.yaml:");
+    expect(postedBody()).not.toContain("Line");
+  });
+
+  test("a comment on a line still names that line", async () => {
+    mockAsana();
+    await handleComment(
+      reviewComment({ commentSubjectType: "line", commentLine: 14 })
+    );
+    expect(postedBody()).toContain("on asana.yaml (Line 14):");
   });
 });

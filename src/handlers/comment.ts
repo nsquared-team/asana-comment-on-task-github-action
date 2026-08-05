@@ -104,12 +104,17 @@ export const handleComment = async (event: SyncEvent) => {
     }
   } else {
     // pull_request_review_comment: inline code comment with file context.
-    // File-level comments carry no line number, so name only the file.
+    // A file-level comment belongs to no line, so name only the file. GitHub
+    // reports original_line as 1 for those rather than leaving it empty, so
+    // the subject type decides - a line number alone cannot tell a file-level
+    // comment apart from one genuinely on the first line.
     const files = event.commentPath.split("/");
     const fileName = files[files.length - 1];
-    const location = event.commentLine
-      ? `${fileName} (Line ${event.commentLine})`
-      : fileName;
+    const isFileLevel = event.commentSubjectType === "file";
+    const location =
+      !isFileLevel && event.commentLine
+        ? `${fileName} (Line ${event.commentLine})`
+        : fileName;
 
     commentText = `<body> ${userHTML} is requesting the following <a href="${event.commentUrl}">changes</a> on ${location}:\n\n${body} </body>`;
     if (event.commentInReplyTo) {
