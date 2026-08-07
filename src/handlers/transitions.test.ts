@@ -510,8 +510,28 @@ describe("merge mapping", () => {
       url.includes("/addTask")
     );
     expect(sectionMoves).toHaveLength(0);
-    // The review is still over, so its subtask still goes.
-    expect(asanaDelete).toHaveBeenCalledWith("/tasks/review-1");
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+
+  test("a merge deletes no approval subtasks, answered or pending", async () => {
+    // The pending subtask stands in for an approval given just before an
+    // auto-merge: the review event that mirrors it onto the subtask runs in
+    // a parallel workflow run, so at merge time it can still read as pending.
+    mockAsana({
+      subtasks: [
+        {
+          gid: "review-1",
+          name: "Review",
+          resource_subtype: "approval",
+          completed: false,
+          created_by: { gid: OTTO_ASANA_ID },
+          assignee: { gid: PEER.asanaId },
+        },
+      ],
+    });
+    await handlePullRequest(merged("nsquared-team/aaardvark-app", "master"));
+    expect(movesTo("Released in Alpha")).toHaveLength(1);
+    expect(asanaDelete).not.toHaveBeenCalled();
   });
 });
 
