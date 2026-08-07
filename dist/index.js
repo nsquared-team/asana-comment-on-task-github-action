@@ -17124,15 +17124,20 @@ const handlePullRequest = (event) => __awaiter(void 0, void 0, void 0, function*
         }
         return;
     }
-    // Either way a closed PR leaves no review outstanding, so the pending
-    // approval subtasks go regardless of how it closed.
+    // Only an abandoned PR clears its pending approval subtasks - nobody is
+    // waiting on them anymore. A merge deletes nothing: the subtasks are the
+    // record of who signed off and who never answered, and an approval given
+    // moments before an auto-merge can still read as pending here because the
+    // review event that mirrors it runs in a parallel workflow run.
     if (event.action === "closed") {
         const targetSection = event.prMerged
             ? SECTIONS.sectionForMerge(event.repoFullName, event.prBaseRef)
             : SECTIONS.IN_PROGRESS;
         for (const taskId of event.taskIds) {
-            const approvalSubtasks = yield asana.getAllApprovalSubtasks(taskId, asana.ottoUser());
-            yield asana.deleteApprovalTasks(approvalSubtasks);
+            if (!event.prMerged) {
+                const approvalSubtasks = yield asana.getAllApprovalSubtasks(taskId, asana.ottoUser());
+                yield asana.deleteApprovalTasks(approvalSubtasks);
+            }
             // A merge into a non-release branch ships nothing, so it moves nothing.
             if (!targetSection)
                 continue;
