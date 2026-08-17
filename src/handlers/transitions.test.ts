@@ -872,3 +872,164 @@ describe("review comment location names a line only when there is one", () => {
     expect(postedBody()).toContain("on asana.yaml (Line 14):");
   });
 });
+
+describe("a merge conflict invalidates the approvals", () => {
+  const DEV = { githubName: "some-dev", asanaId: "dev-asana-id", team: "DEV" };
+
+  // The cascade reads the PR itself for mergeability and the reviews list
+  // separately, so the mock has to answer per URL.
+  const mockGithub = (mergeable: boolean | null, reviews: any[]) =>
+    githubGet.mockImplementation((url: string) =>
+      Promise.resolve({
+        data: url.endsWith("/reviews") ? reviews : { mergeable },
+      })
+    );
+
+  const peerApproval = (requestedReviewers: any[] = []) =>
+    baseEvent({
+      eventName: "pull_request_review",
+      action: "submitted",
+      reviewState: "approved",
+      username: PEER.githubName,
+      commentUrl: "https://github.com/r/pull/42#review-conflict",
+      requestedReviewers,
+    });
+
+  const peerApproved = [
+    {
+      user: { login: PEER.githubName },
+      state: "APPROVED",
+      submitted_at: "2026-08-01T00:00:00Z",
+    },
+  ];
+
+  const subtaskCreates = () =>
+    asanaPost.mock.calls.filter(([url]: [string]) =>
+      url.includes("/tasks/111/subtasks")
+    );
+
+  test("otto's conflict alert clears the pending review subtasks but keeps the CI subtask", async () => {
+    mockAsana({
+      subtasks: [
+        {
+          gid: "rev-sub-1",
+          name: "Review",
+          resource_subtype: "approval",
+          completed: false,
+          created_by: { gid: OTTO_ASANA_ID },
+          assignee: { gid: DEV.asanaId },
+        },
+        {
+          gid: "ci-sub-1",
+          name: "Automated CI Testing",
+          resource_subtype: "approval",
+          completed: false,
+          created_by: { gid: OTTO_ASANA_ID },
+          assignee: { gid: OTTO_ASANA_ID },
+        },
+      ],
+    });
+    await handleComment(
+      baseEvent({
+        eventName: "issue_comment",
+        action: "created",
+        username: "otto-bot-git",
+        rawCommentBody:
+          "This pull request has conflicts, please resolve those before we can evaluate the pull request.",
+        commentUrl: "https://github.com/r/pull/42#issuecomment-1",
+      })
+    );
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/rev-sub-1");
+    expect(asanaDelete).not.toHaveBeenCalledWith("/tasks/ci-sub-1");
+    expect(movesTo("Next")).toHaveLength(1);
+    expect(asanaPut).toHaveBeenCalledWith("/tasks/111", {
+      data: { completed: false },
+    });
+  });
+
+  test("an approval on a conflicting PR neither promotes the task nor hands the next tier a review", async () => {
+    mockAsana();
+    mockGithub(false, peerApproved);
+    await handleReview(peerApproval([DEV]));
+    expect(movesTo("Approved")).toHaveLength(0);
+    expect(subtaskCreates()).toHaveLength(0);
+  });
+
+  test("the same approval on a mergeable PR does hand the next tier a review", async () => {
+    mockAsana();
+    mockGithub(true, peerApproved);
+    await handleReview(peerApproval([DEV]));
+    expect(subtaskCreates()).toHaveLength(1);
+  });
+
+  test("mergeability GitHub has not computed yet still promotes", async () => {
+    mockAsana();
+    mockGithub(null, peerApproved);
+    await handleReview(peerApproval());
+    expect(movesTo("Approved")).toHaveLength(1);
+  });
+});
+
+describe("a merge turns the open reviews into FYI reviews", () => {
+  const approvalSubtask = (overrides: any) => ({
+    resource_subtype: "approval",
+    completed: false,
+    created_by: { gid: OTTO_ASANA_ID },
+    assignee: { gid: PEER.asanaId },
+    ...overrides,
+  });
+
+  const mockAsanaWithEverySubtaskShape = () =>
+    mockAsana({
+      subtasks: [
+        approvalSubtask({ gid: "open-review", name: "Review" }),
+        approvalSubtask({
+          gid: "answered-review",
+          name: "Review",
+          completed: true,
+        }),
+        approvalSubtask({ gid: "already-fyi", name: "FYI Review" }),
+        approvalSubtask({ gid: "ci-sub", name: "Automated CI Testing" }),
+      ],
+    });
+
+  const renames = () =>
+    asanaPut.mock.calls.filter(
+      ([, payload]: [string, any]) => payload?.data?.name === "FYI Review"
+    );
+
+  const closed = (prMerged: boolean, prBaseRef = "master") =>
+    baseEvent({
+      action: "closed",
+      prMerged,
+      prState: "closed",
+      repoFullName: "nsquared-team/aaardvark-app",
+      prBaseRef,
+    });
+
+  test("only the open, unprefixed Review subtask is relabelled", async () => {
+    mockAsanaWithEverySubtaskShape();
+    await handlePullRequest(closed(true));
+    expect(renames()).toEqual([
+      ["/tasks/open-review", { data: { name: "FYI Review" } }],
+    ]);
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+
+  test("a stacked merge relabels even though it moves the task nowhere", async () => {
+    mockAsanaWithEverySubtaskShape();
+    await handlePullRequest(closed(true, "feature-parent"));
+    const sectionMoves = asanaPost.mock.calls.filter(([url]: [string]) =>
+      url.includes("/addTask")
+    );
+    expect(sectionMoves).toHaveLength(0);
+    expect(renames()).toHaveLength(1);
+  });
+
+  test("a PR closed without merging still deletes the subtasks instead", async () => {
+    mockAsanaWithEverySubtaskShape();
+    await handlePullRequest(closed(false));
+    expect(renames()).toHaveLength(0);
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/open-review");
+  });
+});
