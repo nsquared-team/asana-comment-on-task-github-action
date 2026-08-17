@@ -143,6 +143,20 @@ export const deleteReviewSubtasks = async (taskId: string) => {
   await deleteApprovalTasks(reviewSubtasks);
 };
 
+// Once the PR is merged nobody is waiting on an unanswered review, but the
+// subtask still records who never answered - so it is relabelled rather than
+// deleted. Matching the bare name leaves an already-prefixed subtask ("FYI
+// Review" from an earlier merge event, or any other "... Review") untouched,
+// which is what makes a repeated merge event a no-op. getAllApprovalSubtasks
+// only returns incomplete subtasks, so an answered review keeps its name.
+export const relabelReviewSubtasksAsFyi = async (taskId: string) => {
+  const subtasks = await getAllApprovalSubtasks(taskId, ottoUser());
+  for (const subtask of subtasks) {
+    if (subtask.name !== "Review") continue;
+    await updateApprovalSubtask(subtask.gid, { name: "FYI Review" });
+  }
+};
+
 export const cleanupApprovalTasks = async (taskId: string) => {
   const approvalSubtasks = await getAllApprovalSubtasks(taskId, ottoUser());
   const teamIds = (team: string) =>
