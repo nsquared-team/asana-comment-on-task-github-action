@@ -872,3 +872,100 @@ describe("review comment location names a line only when there is one", () => {
     expect(postedBody()).toContain("on asana.yaml (Line 14):");
   });
 });
+
+describe("a merge conflict invalidates the approvals", () => {
+  const DEV = { githubName: "some-dev", asanaId: "dev-asana-id", team: "DEV" };
+
+  // The cascade reads the PR itself for mergeability and the reviews list
+  // separately, so the mock has to answer per URL.
+  const mockGithub = (mergeable: boolean | null, reviews: any[]) =>
+    githubGet.mockImplementation((url: string) =>
+      Promise.resolve({
+        data: url.endsWith("/reviews") ? reviews : { mergeable },
+      })
+    );
+
+  const peerApproval = (requestedReviewers: any[] = []) =>
+    baseEvent({
+      eventName: "pull_request_review",
+      action: "submitted",
+      reviewState: "approved",
+      username: PEER.githubName,
+      commentUrl: "https://github.com/r/pull/42#review-conflict",
+      requestedReviewers,
+    });
+
+  const peerApproved = [
+    {
+      user: { login: PEER.githubName },
+      state: "APPROVED",
+      submitted_at: "2026-08-01T00:00:00Z",
+    },
+  ];
+
+  const subtaskCreates = () =>
+    asanaPost.mock.calls.filter(([url]: [string]) =>
+      url.includes("/tasks/111/subtasks")
+    );
+
+  test("otto's conflict alert clears the pending review subtasks but keeps the CI subtask", async () => {
+    mockAsana({
+      subtasks: [
+        {
+          gid: "rev-sub-1",
+          name: "Review",
+          resource_subtype: "approval",
+          completed: false,
+          created_by: { gid: OTTO_ASANA_ID },
+          assignee: { gid: DEV.asanaId },
+        },
+        {
+          gid: "ci-sub-1",
+          name: "Automated CI Testing",
+          resource_subtype: "approval",
+          completed: false,
+          created_by: { gid: OTTO_ASANA_ID },
+          assignee: { gid: OTTO_ASANA_ID },
+        },
+      ],
+    });
+    await handleComment(
+      baseEvent({
+        eventName: "issue_comment",
+        action: "created",
+        username: "otto-bot-git",
+        rawCommentBody:
+          "This pull request has conflicts, please resolve those before we can evaluate the pull request.",
+        commentUrl: "https://github.com/r/pull/42#issuecomment-1",
+      })
+    );
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/rev-sub-1");
+    expect(asanaDelete).not.toHaveBeenCalledWith("/tasks/ci-sub-1");
+    expect(movesTo("Next")).toHaveLength(1);
+    expect(asanaPut).toHaveBeenCalledWith("/tasks/111", {
+      data: { completed: false },
+    });
+  });
+
+  test("an approval on a conflicting PR neither promotes the task nor hands the next tier a review", async () => {
+    mockAsana();
+    mockGithub(false, peerApproved);
+    await handleReview(peerApproval([DEV]));
+    expect(movesTo("Approved")).toHaveLength(0);
+    expect(subtaskCreates()).toHaveLength(0);
+  });
+
+  test("the same approval on a mergeable PR does hand the next tier a review", async () => {
+    mockAsana();
+    mockGithub(true, peerApproved);
+    await handleReview(peerApproval([DEV]));
+    expect(subtaskCreates()).toHaveLength(1);
+  });
+
+  test("mergeability GitHub has not computed yet still promotes", async () => {
+    mockAsana();
+    mockGithub(null, peerApproved);
+    await handleReview(peerApproval());
+    expect(movesTo("Approved")).toHaveLength(1);
+  });
+});

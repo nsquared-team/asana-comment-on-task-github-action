@@ -15,8 +15,21 @@ const DEFINITIVE_REVIEW_STATES = ["CHANGES_REQUESTED", "APPROVED", "DISMISSED"];
 // cascade PEER_DEV -> DEV -> QA, creating the next tier's subtasks as the
 // previous tier completes.
 const handleApprovalCascade = async (event: SyncEvent) => {
-  const githubUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}${REQUESTS.REVIEWS_URL}`;
-  const reviewsResponse = await githubAxios.get(githubUrl);
+  const githubUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
+
+  // A conflicting PR has a diff nobody has reviewed yet - resolving the
+  // conflict writes it. So no approval counts while the conflict stands: the
+  // cascade neither hands the next tier a review nor promotes the task, and
+  // the tier that already approved has to approve the resolved code again.
+  // GitHub computes mergeability asynchronously and answers `null` until it
+  // has, which reads as mergeable - otto's conflict alert is the signal that
+  // parks the task, this guard only refuses to un-park it.
+  const pullRequestResponse = await githubAxios.get(githubUrl);
+  if (pullRequestResponse.data.mergeable === false) return [];
+
+  const reviewsResponse = await githubAxios.get(
+    `${githubUrl}${REQUESTS.REVIEWS_URL}`
+  );
   const reviews = reviewsResponse.data;
 
   // Latest definitive review per reviewer. A dismissed approval has to stay

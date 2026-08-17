@@ -75,6 +75,10 @@ export const handleComment = async (event: SyncEvent) => {
 
   if (isMergeConflictAlert) {
     for (const taskId of event.taskIds) {
+      // Resolving the conflict rewrites the diff, so the outstanding review
+      // requests are for code that is about to change - same reasoning as a
+      // changes-requested review.
+      await asana.deleteReviewSubtasks(taskId);
       await asana.moveTaskToSection(
         taskId,
         SECTIONS.NEXT,
