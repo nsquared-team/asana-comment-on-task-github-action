@@ -969,3 +969,67 @@ describe("a merge conflict invalidates the approvals", () => {
     expect(movesTo("Approved")).toHaveLength(1);
   });
 });
+
+describe("a merge turns the open reviews into FYI reviews", () => {
+  const approvalSubtask = (overrides: any) => ({
+    resource_subtype: "approval",
+    completed: false,
+    created_by: { gid: OTTO_ASANA_ID },
+    assignee: { gid: PEER.asanaId },
+    ...overrides,
+  });
+
+  const mockAsanaWithEverySubtaskShape = () =>
+    mockAsana({
+      subtasks: [
+        approvalSubtask({ gid: "open-review", name: "Review" }),
+        approvalSubtask({
+          gid: "answered-review",
+          name: "Review",
+          completed: true,
+        }),
+        approvalSubtask({ gid: "already-fyi", name: "FYI Review" }),
+        approvalSubtask({ gid: "ci-sub", name: "Automated CI Testing" }),
+      ],
+    });
+
+  const renames = () =>
+    asanaPut.mock.calls.filter(
+      ([, payload]: [string, any]) => payload?.data?.name === "FYI Review"
+    );
+
+  const closed = (prMerged: boolean, prBaseRef = "master") =>
+    baseEvent({
+      action: "closed",
+      prMerged,
+      prState: "closed",
+      repoFullName: "nsquared-team/aaardvark-app",
+      prBaseRef,
+    });
+
+  test("only the open, unprefixed Review subtask is relabelled", async () => {
+    mockAsanaWithEverySubtaskShape();
+    await handlePullRequest(closed(true));
+    expect(renames()).toEqual([
+      ["/tasks/open-review", { data: { name: "FYI Review" } }],
+    ]);
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+
+  test("a stacked merge relabels even though it moves the task nowhere", async () => {
+    mockAsanaWithEverySubtaskShape();
+    await handlePullRequest(closed(true, "feature-parent"));
+    const sectionMoves = asanaPost.mock.calls.filter(([url]: [string]) =>
+      url.includes("/addTask")
+    );
+    expect(sectionMoves).toHaveLength(0);
+    expect(renames()).toHaveLength(1);
+  });
+
+  test("a PR closed without merging still deletes the subtasks instead", async () => {
+    mockAsanaWithEverySubtaskShape();
+    await handlePullRequest(closed(false));
+    expect(renames()).toHaveLength(0);
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/open-review");
+  });
+});

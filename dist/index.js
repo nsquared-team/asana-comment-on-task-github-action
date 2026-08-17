@@ -16082,7 +16082,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.updateApprovalSubtask = exports.addRequestedReview = exports.addApprovalTask = exports.cleanupApprovalTasks = exports.deleteReviewSubtasks = exports.deleteApprovalTasks = exports.getApprovalSubtask = exports.getAllApprovalSubtasks = exports.getStories = exports.addFollowers = exports.setTaskIncomplete = exports.moveTaskToSection = exports.getAllPages = exports.ottoUser = void 0;
+exports.updateApprovalSubtask = exports.addRequestedReview = exports.addApprovalTask = exports.cleanupApprovalTasks = exports.relabelReviewSubtasksAsFyi = exports.deleteReviewSubtasks = exports.deleteApprovalTasks = exports.getApprovalSubtask = exports.getAllApprovalSubtasks = exports.getStories = exports.addFollowers = exports.setTaskIncomplete = exports.moveTaskToSection = exports.getAllPages = exports.ottoUser = void 0;
 const core_1 = __nccwpck_require__(7484);
 const asanaAxios_1 = __importDefault(__nccwpck_require__(5940));
 const REQUESTS = __importStar(__nccwpck_require__(4291));
@@ -16203,6 +16203,21 @@ const deleteReviewSubtasks = (taskId) => __awaiter(void 0, void 0, void 0, funct
     yield (0, exports.deleteApprovalTasks)(reviewSubtasks);
 });
 exports.deleteReviewSubtasks = deleteReviewSubtasks;
+// Once the PR is merged nobody is waiting on an unanswered review, but the
+// subtask still records who never answered - so it is relabelled rather than
+// deleted. Matching the bare name leaves an already-prefixed subtask ("FYI
+// Review" from an earlier merge event, or any other "... Review") untouched,
+// which is what makes a repeated merge event a no-op. getAllApprovalSubtasks
+// only returns incomplete subtasks, so an answered review keeps its name.
+const relabelReviewSubtasksAsFyi = (taskId) => __awaiter(void 0, void 0, void 0, function* () {
+    const subtasks = yield (0, exports.getAllApprovalSubtasks)(taskId, (0, exports.ottoUser)());
+    for (const subtask of subtasks) {
+        if (subtask.name !== "Review")
+            continue;
+        yield (0, exports.updateApprovalSubtask)(subtask.gid, { name: "FYI Review" });
+    }
+});
+exports.relabelReviewSubtasksAsFyi = relabelReviewSubtasksAsFyi;
 const cleanupApprovalTasks = (taskId) => __awaiter(void 0, void 0, void 0, function* () {
     const approvalSubtasks = yield (0, exports.getAllApprovalSubtasks)(taskId, (0, exports.ottoUser)());
     const teamIds = (team) => users_1.users.filter((user) => user.team === team).map((user) => user.asanaId);
@@ -17141,6 +17156,12 @@ const handlePullRequest = (event) => __awaiter(void 0, void 0, void 0, function*
             if (!event.prMerged) {
                 const approvalSubtasks = yield asana.getAllApprovalSubtasks(taskId, asana.ottoUser());
                 yield asana.deleteApprovalTasks(approvalSubtasks);
+            }
+            else {
+                // The code is in, so an unanswered review is now an FYI. Relabelling
+                // ahead of the section decision is deliberate: a stacked merge ships
+                // nothing and moves nothing, but its reviews are just as finished.
+                yield asana.relabelReviewSubtasksAsFyi(taskId);
             }
             // A merge into a non-release branch ships nothing, so it moves nothing.
             if (!targetSection)

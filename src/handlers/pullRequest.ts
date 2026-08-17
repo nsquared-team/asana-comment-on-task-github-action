@@ -103,6 +103,11 @@ export const handlePullRequest = async (event: SyncEvent) => {
           asana.ottoUser()
         );
         await asana.deleteApprovalTasks(approvalSubtasks);
+      } else {
+        // The code is in, so an unanswered review is now an FYI. Relabelling
+        // ahead of the section decision is deliberate: a stacked merge ships
+        // nothing and moves nothing, but its reviews are just as finished.
+        await asana.relabelReviewSubtasksAsFyi(taskId);
       }
       // A merge into a non-release branch ships nothing, so it moves nothing.
       if (!targetSection) continue;
