@@ -1013,7 +1013,7 @@ describe("review comment location names a line only when there is one", () => {
   });
 });
 
-describe("a merge conflict invalidates the approvals", () => {
+describe("a merge conflict pauses the cascade", () => {
   const DEV = { githubName: "some-dev", asanaId: "dev-asana-id", team: "DEV" };
 
   // The cascade reads the PR itself for mergeability and the reviews list
