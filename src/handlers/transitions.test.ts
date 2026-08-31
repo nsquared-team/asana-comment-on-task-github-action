@@ -655,7 +655,7 @@ describe("bots are not a review tier", () => {
     expect(movesTo("Approved")).toHaveLength(1);
   });
 
-  test("an approval that predates otto's changes-request no longer counts", async () => {
+  test("an approval stands through a later changes-request from someone else", async () => {
     mockAsana();
     githubGet.mockResolvedValue({
       data: [
@@ -677,7 +677,7 @@ describe("bots are not a review tier", () => {
       ],
     });
     await handleReview(approvalBy("otto-bot-git"));
-    expect(movesTo("Approved")).toHaveLength(0);
+    expect(movesTo("Approved")).toHaveLength(1);
   });
 
   test("otto still pending neither pings QA nor blocks the human tiers", async () => {
@@ -778,7 +778,7 @@ describe("a blocked tier resummons its reviewer", () => {
       commentUrl: `https://github.com/o/r/pull/42#review-${login}`,
     });
 
-  test("an approval arriving behind a changes-request re-requests the stale approver instead of deadlocking", async () => {
+  test("an approval behind someone else's changes-request still counts and is not resummoned", async () => {
     mockAsana();
     githubGet.mockResolvedValue({
       data: [
@@ -800,17 +800,12 @@ describe("a blocked tier resummons its reviewer", () => {
       ],
     });
     await handleReview(approvalBy(PEER.githubName));
-    expect(rerequests()).toHaveLength(1);
-    expect(rerequests()[0][1]).toEqual({ reviewers: [HSEIN.githubName] });
-    // The stale approval still blocks: no promotion, no next-tier subtask.
-    expect(movesTo("Approved")).toHaveLength(0);
-    const subtaskCreates = asanaPost.mock.calls.filter(([url]: [string]) =>
-      url.includes("/tasks/111/subtasks")
-    );
-    expect(subtaskCreates).toHaveLength(0);
+    expect(rerequests()).toHaveLength(0);
+    // Both standing verdicts are approvals, so the tier is satisfied.
+    expect(movesTo("Approved")).toHaveLength(1);
   });
 
-  test("a dismissed reviewer is resummoned the same way", async () => {
+  test("a dismissed approval resummons its reviewer", async () => {
     mockAsana();
     githubGet.mockResolvedValue({
       data: [
@@ -837,18 +832,13 @@ describe("a blocked tier resummons its reviewer", () => {
       data: [
         {
           user: { login: HSEIN.githubName },
-          state: "APPROVED",
+          state: "DISMISSED",
           submitted_at: "2026-08-01T00:00:00Z",
         },
         {
           user: { login: PEER.githubName },
-          state: "CHANGES_REQUESTED",
-          submitted_at: "2026-08-01T01:00:00Z",
-        },
-        {
-          user: { login: PEER.githubName },
           state: "APPROVED",
-          submitted_at: "2026-08-01T02:00:00Z",
+          submitted_at: "2026-08-01T01:00:00Z",
         },
       ],
     });
@@ -859,13 +849,13 @@ describe("a blocked tier resummons its reviewer", () => {
     expect(rerequests()).toHaveLength(0);
   });
 
-  test("a bot's stale approval and a standing changes-request are never resummoned", async () => {
+  test("a bot's dismissed review and a standing changes-request are never resummoned", async () => {
     mockAsana();
     githubGet.mockResolvedValue({
       data: [
         {
           user: { login: "otto-bot-git" },
-          state: "APPROVED",
+          state: "DISMISSED",
           submitted_at: "2026-08-01T00:00:00Z",
         },
         {
@@ -891,18 +881,13 @@ describe("a blocked tier resummons its reviewer", () => {
       data: [
         {
           user: { login: HSEIN.githubName },
-          state: "APPROVED",
+          state: "DISMISSED",
           submitted_at: "2026-08-01T00:00:00Z",
         },
         {
           user: { login: PEER.githubName },
-          state: "CHANGES_REQUESTED",
-          submitted_at: "2026-08-01T01:00:00Z",
-        },
-        {
-          user: { login: PEER.githubName },
           state: "APPROVED",
-          submitted_at: "2026-08-01T02:00:00Z",
+          submitted_at: "2026-08-01T01:00:00Z",
         },
       ],
     });

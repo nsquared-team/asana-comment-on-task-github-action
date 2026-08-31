@@ -18,9 +18,9 @@ const handleApprovalCascade = async (event: SyncEvent) => {
   const githubUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
 
   // A conflicting PR has a diff nobody has reviewed yet - resolving the
-  // conflict writes it. So no approval counts while the conflict stands: the
-  // cascade neither hands the next tier a review nor promotes the task, and
-  // the tier that already approved has to approve the resolved code again.
+  // conflict writes it. So while the conflict stands the cascade neither
+  // hands the next tier a review nor promotes the task; once it is resolved,
+  // standing approvals count again on the next review event.
   // GitHub computes mergeability asynchronously and answers `null` until it
   // has, which reads as mergeable - otto's conflict alert is the signal that
   // parks the task, this guard only refuses to un-park it.
@@ -35,19 +35,18 @@ const handleApprovalCascade = async (event: SyncEvent) => {
   // Latest definitive review per reviewer. A dismissed approval has to stay
   // in the tally as "no longer approved" - dropping the reviewer entirely
   // would let their vacated slot read as satisfied.
+  //
+  // An approval is needed only once: it stands until its reviewer changes
+  // their own verdict or the review is dismissed. A later changes-request
+  // from someone else (otto's included) deliberately does NOT invalidate
+  // it - that mirrors GitHub's own semantics, where invalidating on revision
+  // is an explicit dismissal, never a side effect of another review.
   const latestReviews: { [githubName: string]: any } = {};
-  let lastChangesRequestedAt = "";
   for (const review of reviews) {
     const githubName = review.user.login;
     const reviewerObj = utils.findUserByGithubName(githubName);
     if (!reviewerObj) continue;
     if (!DEFINITIVE_REVIEW_STATES.includes(review.state)) continue;
-    if (
-      review.state === "CHANGES_REQUESTED" &&
-      review.submitted_at > lastChangesRequestedAt
-    ) {
-      lastChangesRequestedAt = review.submitted_at;
-    }
     if (
       !latestReviews[githubName] ||
       latestReviews[githubName].timestamp < review.submitted_at
@@ -57,20 +56,6 @@ const handleApprovalCascade = async (event: SyncEvent) => {
         timestamp: review.submitted_at,
         info: reviewerObj,
       };
-    }
-  }
-
-  // An approval vouches only for the code that existed when it was given.
-  // Once someone requests changes the PR is being revised, so every approval
-  // that predates the newest standing changes-request (otto's included)
-  // drops out of the tally until its reviewer approves again.
-  for (const githubName of Object.keys(latestReviews)) {
-    const review = latestReviews[githubName];
-    if (
-      review.state === "APPROVED" &&
-      review.timestamp <= lastChangesRequestedAt
-    ) {
-      review.state = "STALE_APPROVED";
     }
   }
 
@@ -87,20 +72,18 @@ const handleApprovalCascade = async (event: SyncEvent) => {
     }
   }
 
-  // A stale or dismissed approval blocks its tier, but nothing summons its
-  // reviewer back: they are no longer in requested_reviewers, their old
-  // subtask is answered, and GitHub still shows the approval as standing -
-  // so nobody re-requests them by hand and the cascade deadlocks silently.
-  // Re-requesting their review here fires review_requested, whose handler
-  // re-creates the "Review" subtask once their tier is active - the same
-  // single path every other summons takes. A standing changes-request is
-  // deliberately not resummoned: the author answers it and re-requests.
+  // A dismissed approval blocks its tier, but nothing summons its reviewer
+  // back: they are no longer in requested_reviewers and their old subtask is
+  // answered - so nobody re-requests them by hand and the cascade deadlocks
+  // silently. Re-requesting their review here fires review_requested, whose
+  // handler re-creates the "Review" subtask once their tier is active - the
+  // same single path every other summons takes. A standing changes-request
+  // is deliberately not resummoned: the author answers it and re-requests.
   // (The requested_reviewers pass above already replaced anyone pending
   // with PENDING, so this only reaches reviewers nobody has re-requested.)
   for (const githubName of Object.keys(latestReviews)) {
     const review = latestReviews[githubName];
-    if (review.state !== "STALE_APPROVED" && review.state !== "DISMISSED")
-      continue;
+    if (review.state !== "DISMISSED") continue;
     if (!utils.isReviewTier(review.info)) continue;
     try {
       await githubAxios.post(`${githubUrl}${REQUESTS.REVIEWERS_URL}`, {
