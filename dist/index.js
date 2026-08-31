@@ -16309,7 +16309,7 @@ exports.PR_DESCRIPTION = "pr-description";
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.REVIEWS_URL = exports.PULLS_URL = exports.REPOS_URL = exports.BASE_GITHUB_URL = exports.ADD_TASK_URL = exports.ADD_FOLLOWERS_URL = exports.STORIES_LIST_PARAMS = exports.SUBTASKS_URL = exports.STORIES_URL = exports.SECTIONS_URL = exports.TASKS_URL = exports.PROJECTS_URL = exports.BASE_ASANA_URL = exports.IDEMPOTENT_METHODS = exports.MAX_RETRY_DELAY = exports.RETRY_DELAY = exports.RETRIES = void 0;
+exports.REVIEWERS_URL = exports.REVIEWS_URL = exports.PULLS_URL = exports.REPOS_URL = exports.BASE_GITHUB_URL = exports.ADD_TASK_URL = exports.ADD_FOLLOWERS_URL = exports.STORIES_LIST_PARAMS = exports.SUBTASKS_URL = exports.STORIES_URL = exports.SECTIONS_URL = exports.TASKS_URL = exports.PROJECTS_URL = exports.BASE_ASANA_URL = exports.IDEMPOTENT_METHODS = exports.MAX_RETRY_DELAY = exports.RETRY_DELAY = exports.RETRIES = void 0;
 exports.RETRIES = 3;
 exports.RETRY_DELAY = 1000;
 // Ceiling for a server-supplied Retry-After, so a long rate-limit window
@@ -16331,6 +16331,7 @@ exports.BASE_GITHUB_URL = "https://api.github.com/";
 exports.REPOS_URL = "/repos/";
 exports.PULLS_URL = "/pulls/";
 exports.REVIEWS_URL = "/reviews";
+exports.REVIEWERS_URL = "/requested_reviewers";
 
 
 /***/ }),
@@ -17312,6 +17313,32 @@ const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, funct
                 timestamp: null,
                 info: reviewer,
             };
+        }
+    }
+    // A stale or dismissed approval blocks its tier, but nothing summons its
+    // reviewer back: they are no longer in requested_reviewers, their old
+    // subtask is answered, and GitHub still shows the approval as standing -
+    // so nobody re-requests them by hand and the cascade deadlocks silently.
+    // Re-requesting their review here fires review_requested, whose handler
+    // re-creates the "Review" subtask once their tier is active - the same
+    // single path every other summons takes. A standing changes-request is
+    // deliberately not resummoned: the author answers it and re-requests.
+    // (The requested_reviewers pass above already replaced anyone pending
+    // with PENDING, so this only reaches reviewers nobody has re-requested.)
+    for (const githubName of Object.keys(latestReviews)) {
+        const review = latestReviews[githubName];
+        if (review.state !== "STALE_APPROVED" && review.state !== "DISMISSED")
+            continue;
+        if (!utils.isReviewTier(review.info))
+            continue;
+        try {
+            yield githubAxios_1.default.post(`${githubUrl}${REQUESTS.REVIEWERS_URL}`, {
+                reviewers: [githubName],
+            });
+        }
+        catch (error) {
+            // One unreachable reviewer must not stall the tally or the sync.
+            console.warn(`Failed to re-request a review from ${githubName}:`, error);
         }
     }
     let approvedByPeer = true;

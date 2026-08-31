@@ -87,6 +87,31 @@ const handleApprovalCascade = async (event: SyncEvent) => {
     }
   }
 
+  // A stale or dismissed approval blocks its tier, but nothing summons its
+  // reviewer back: they are no longer in requested_reviewers, their old
+  // subtask is answered, and GitHub still shows the approval as standing -
+  // so nobody re-requests them by hand and the cascade deadlocks silently.
+  // Re-requesting their review here fires review_requested, whose handler
+  // re-creates the "Review" subtask once their tier is active - the same
+  // single path every other summons takes. A standing changes-request is
+  // deliberately not resummoned: the author answers it and re-requests.
+  // (The requested_reviewers pass above already replaced anyone pending
+  // with PENDING, so this only reaches reviewers nobody has re-requested.)
+  for (const githubName of Object.keys(latestReviews)) {
+    const review = latestReviews[githubName];
+    if (review.state !== "STALE_APPROVED" && review.state !== "DISMISSED")
+      continue;
+    if (!utils.isReviewTier(review.info)) continue;
+    try {
+      await githubAxios.post(`${githubUrl}${REQUESTS.REVIEWERS_URL}`, {
+        reviewers: [githubName],
+      });
+    } catch (error) {
+      // One unreachable reviewer must not stall the tally or the sync.
+      console.warn(`Failed to re-request a review from ${githubName}:`, error);
+    }
+  }
+
   let approvedByPeer = true;
   let approvedByDev = true;
   let approvedByQa = true;
