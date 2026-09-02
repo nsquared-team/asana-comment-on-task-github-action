@@ -16277,10 +16277,12 @@ const deleteDuplicateReviewSubtasks = (taskId, reviewer) => __awaiter(void 0, vo
 });
 const addRequestedReview = (taskId, reviewer, pullRequestUrl) => __awaiter(void 0, void 0, void 0, function* () {
     const existing = yield (0, exports.getApprovalSubtask)(taskId, false, reviewer);
-    if (existing)
-        return;
-    const notes = `<a href='${pullRequestUrl}'> Click Here To Start Your Review </a>`;
-    yield (0, exports.addApprovalTask)(taskId, reviewer, "Review", "pending", notes);
+    if (!existing) {
+        const notes = `<a href='${pullRequestUrl}'> Click Here To Start Your Review </a>`;
+        yield (0, exports.addApprovalTask)(taskId, reviewer, "Review", "pending", notes);
+    }
+    // Runs on the existing path too, so a task that already carries a
+    // duplicate pair heals on the next event that touches the reviewer.
     yield deleteDuplicateReviewSubtasks(taskId, reviewer);
 });
 exports.addRequestedReview = addRequestedReview;

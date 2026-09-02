@@ -259,10 +259,12 @@ export const addRequestedReview = async (
   pullRequestUrl: string
 ) => {
   const existing = await getApprovalSubtask(taskId, false, reviewer);
-  if (existing) return;
-
-  const notes = `<a href='${pullRequestUrl}'> Click Here To Start Your Review </a>`;
-  await addApprovalTask(taskId, reviewer, "Review", "pending", notes);
+  if (!existing) {
+    const notes = `<a href='${pullRequestUrl}'> Click Here To Start Your Review </a>`;
+    await addApprovalTask(taskId, reviewer, "Review", "pending", notes);
+  }
+  // Runs on the existing path too, so a task that already carries a
+  // duplicate pair heals on the next event that touches the reviewer.
   await deleteDuplicateReviewSubtasks(taskId, reviewer);
 };
 

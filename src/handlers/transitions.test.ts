@@ -1222,6 +1222,24 @@ describe("overlapping runs leave one Review subtask per reviewer", () => {
     expect(asanaDelete).toHaveBeenCalledWith("/tasks/review-newer");
   });
 
+  test("a task already carrying a duplicate pair is healed without creating a third", async () => {
+    mockAsana({
+      subtasks: [
+        reviewFor("review-older", "2026-09-02T21:02:19.100Z"),
+        reviewFor("review-newer", "2026-09-02T21:02:19.400Z"),
+      ],
+    });
+    await handlePullRequest(
+      baseEvent({ action: "ready_for_review", requestedReviewers: [PEER] })
+    );
+    const subtaskCreates = asanaPost.mock.calls.filter(([url]: [string]) =>
+      url.includes("/tasks/111/subtasks")
+    );
+    expect(subtaskCreates).toHaveLength(0);
+    expect(asanaDelete).toHaveBeenCalledTimes(1);
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/review-newer");
+  });
+
   test("a run with no rival deletes nothing", async () => {
     mockSubtasksAfterCreate([
       reviewFor("review-only", "2026-09-02T21:02:19.100Z"),
