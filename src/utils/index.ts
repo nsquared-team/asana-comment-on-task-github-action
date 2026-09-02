@@ -15,8 +15,13 @@ export const findUserByGithubName = (githubName?: string) =>
   users.find((user) => user.githubName === githubName);
 
 export const extractAsanaTaskIds = (description?: string): string[] => {
+  // A url ends at whitespace or at any bracket or quote, the same boundary the
+  // comment formatter uses. `\S+` ran straight through the `](` of a markdown
+  // link, so two tasks written as `[url-a](url-b)` scraped as one string and the
+  // PR silently synced to url-a's task alone.
   const links =
-    description?.match(/\bhttps?:\/\/\b(app\.asana\.com)\b\S+/gi) || [];
+    description?.match(/\bhttps?:\/\/\b(app\.asana\.com)\b[^\s<>[\]"]+/gi) ||
+    [];
   const ids = links
     .map((link) => {
       const match = link.match(/task\/(\d+)|\/0\/\d+\/(\d+)/);

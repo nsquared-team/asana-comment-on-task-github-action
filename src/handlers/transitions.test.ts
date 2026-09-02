@@ -37,6 +37,7 @@ const asanaPut = asanaAxios.put as jest.Mock;
 const asanaDelete = asanaAxios.delete as jest.Mock;
 const githubGet = githubAxios.get as jest.Mock;
 const githubPost = githubAxios.post as jest.Mock;
+const githubPatch = githubAxios.patch as jest.Mock;
 
 const SECTION_GIDS: { [name: string]: string } = {
   Next: "sec-next",
@@ -288,6 +289,73 @@ describe("CI status", () => {
       baseEvent({ action: "synchronize", ciStatus: "approved", isDraft: false })
     );
     expect(movesTo("Testing / Review")).toHaveLength(1);
+  });
+});
+
+describe("the CI sandbox block in the PR description", () => {
+  const HEADING = "## CI/QA Testing Sandbox";
+  const TAIL =
+    "Please comment and open a new review on this pull request if you find any issues when testing the preview release zip files.";
+
+  const editWith = async (currentBody: string, prDescriptionInput: string) => {
+    mockAsana();
+    githubGet.mockResolvedValue({ data: { body: currentBody } });
+    githubPatch.mockResolvedValue({ data: {} });
+    await handleCiStatus(
+      baseEvent({
+        action: "synchronize",
+        ciStatus: "edit_pr_description",
+        prDescriptionInput,
+      })
+    );
+    return githubPatch.mock.calls[0][1].body as string;
+  };
+
+  test("a $& in the sandbox input is written literally, not expanded into the match", async () => {
+    const body = await editWith(
+      `${HEADING} (old) ## \n A list of unique sandbox sites was created\n${TAIL}`,
+      "$&SANDBOX"
+    );
+    expect(body).toContain("$&SANDBOX");
+    expect(body).not.toContain(TAIL);
+  });
+
+  test("the author's own sections between two stale blocks survive the refresh", async () => {
+    const currentBody = [
+      "## Summary",
+      "what this PR does",
+      "",
+      `${HEADING} (1) ## \n old one`,
+      "",
+      "## My own notes",
+      "keep me",
+      "",
+      `${HEADING} (2) ## \n old two`,
+    ].join("\n");
+
+    const body = await editWith(currentBody, "fresh");
+    expect(body).toContain("## Summary");
+    expect(body).toContain("## My own notes");
+    expect(body).toContain("keep me");
+    expect(body).toContain("fresh");
+    expect(body).not.toContain("old two");
+  });
+
+  test("a block whose trailing sentence was edited away still refreshes", async () => {
+    // The guard tested for a sentence the replacement pattern did not require,
+    // so trimming it left the block frozen at its first value forever.
+    const body = await editWith(
+      `${HEADING} (old) ## \n A list of unique sandbox sites was created`,
+      "fresh"
+    );
+    expect(body).toContain("fresh");
+    expect(body).not.toContain("(old)");
+  });
+
+  test("the first run appends the block instead of replacing anything", async () => {
+    const body = await editWith("## Summary\nwhat this PR does", "first");
+    expect(body).toContain("## Summary");
+    expect(body).toContain("first");
   });
 });
 
@@ -1171,5 +1239,44 @@ describe("a merge turns the open reviews into FYI reviews", () => {
     await handlePullRequest(closed(false));
     expect(renames()).toHaveLength(0);
     expect(asanaDelete).toHaveBeenCalledWith("/tasks/open-review");
+  });
+});
+
+describe("a review body that links to its own pull request", () => {
+  // otto's code-review report opens with a markdown link labelled with the PR
+  // url itself. The scrape read both urls plus the `](` between them as one
+  // "url" and handed it to new RegExp, whose `(` opened a group nothing closed.
+  // The throw propagated out of handleReview into run.ts, which setFailed the
+  // action: the review never reached Asana and the check went red on every
+  // report - PRs 4054, 4184, 4237, 4308, 4326, 4515 and 4521 all hit it.
+  const PR_URL = "https://github.com/nsquared-team/blinkmetrics-app/pull/4237";
+  const OTTO_REPORT = [
+    "# Code Review Report",
+    "",
+    `**Fix scorecard digest giving up (and lying) when data is permanently stale** \u00b7 [${PR_URL}](${PR_URL}) \u00b7 @ali-al-najjar`,
+  ].join("\n");
+
+  const postedStory = () =>
+    asanaPost.mock.calls.filter(([url]: [string]) => url.includes("/stories"));
+
+  test("otto's report is posted to Asana instead of failing the action", async () => {
+    mockAsana();
+    await handleReview(
+      baseEvent({
+        eventName: "pull_request_review",
+        action: "submitted",
+        reviewState: "changes_requested",
+        username: "otto-bot-git",
+        // buildFormattedBody reads rawCommentBody; reviewBody is written by
+        // buildEvent and read nowhere, so setting only it would prove nothing.
+        rawCommentBody: OTTO_REPORT,
+        commentUrl: `${PR_URL}#pullrequestreview-1`,
+      })
+    );
+
+    expect(postedStory()).toHaveLength(1);
+    const html = postedStory()[0][1].data.html_text as string;
+    expect(html).toContain(`<a href="${PR_URL}">`);
+    expect(html).not.toContain(`](${PR_URL})`);
   });
 });

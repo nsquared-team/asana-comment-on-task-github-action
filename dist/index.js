@@ -16682,9 +16682,33 @@ var __importStar = (this && this.__importStar) || function (mod) {
     return result;
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.replaceMentions = exports.linkifyBody = exports.stripQuotesAndArrows = exports.isReplyComment = exports.userMentionHTML = void 0;
+exports.replaceMentions = exports.linkifyBody = exports.restoreAnchors = exports.linkifyToPlaceholders = exports.stripQuotesAndArrows = exports.isReplyComment = exports.userMentionHTML = void 0;
 const utils = __importStar(__nccwpck_require__(8541));
 const MENTION_BASE_URL = "https://app.asana.com/0/";
+// Comment text is data, never a pattern. Every regex below is a literal and
+// every replacement is a function, so nothing scraped from a comment is ever
+// compiled or interpreted: a `[url](url)` pair used to be read as one "url"
+// whose `](` opened a group nothing closed, which failed the whole action, and
+// a `$&` in a url or a label used to splice the match back into the output.
+//
+// U+0000 marks a finished anchor. Spelled as a call rather than an escape so it
+// stays visible in review and no formatter can quietly normalise it to a space.
+const SENTINEL = String.fromCharCode(0);
+const IMAGE_MARKUP = new RegExp(`img(?:\\s+[\\w:-]+="[^"\\n]*")*?\\s+src="(https?://[^\\s"${SENTINEL}]+)"`, "gi");
+// A url ends at whitespace or at any bracket or quote - the characters markdown
+// uses to delimit one - so a link can never run past its own closing bracket.
+const MARKDOWN_LINK = new RegExp(`\\[([^\\n${SENTINEL}]{0,300}?)\\]\\((https?://[^\\s)"${SENTINEL}]+)\\)`, "gi");
+// Parentheses stay legal inside a bare url so a query string survives intact;
+// markdown pairs are already consumed above, and the closing `)` of a
+// parenthetical is dropped anyway by the trailing `[\w/]`.
+const BARE_URL = new RegExp(`\\bhttps?://[^\\s<>\\[\\]"${SENTINEL}]*[\\w/]`, "gi");
+const MENTION = new RegExp(`@[^\\s${SENTINEL}]+\\w`, "gi");
+const STASHED_ANCHOR = new RegExp(`${SENTINEL}(\\d+)${SENTINEL}`, "g");
+const siteName = (url) => {
+    const site = url.replace(/^[a-z]+:\/\/(www\.)?/i, "").split(/[./]/)[0];
+    return `${site.charAt(0).toUpperCase()}${site.slice(1)}`;
+};
+const anchor = (url, label) => `<a href="${url}"> 🔗 ${label} 🔗 </a>`;
 const userMentionHTML = (githubName) => {
     const userObj = utils.findUserByGithubName(githubName);
     if (!userObj)
@@ -16699,10 +16723,16 @@ const stripQuotesAndArrows = (body) => {
     let commentBody = body;
     if (commentBody.includes(">") || commentBody.includes("<")) {
         if ((0, exports.isReplyComment)(commentBody)) {
-            const lines = commentBody.split("\n");
-            const kept = lines.filter((line) => line.indexOf(">") !== 0);
-            kept.shift();
-            commentBody = kept.join("");
+            const kept = commentBody
+                .split("\n")
+                .filter((line) => line.indexOf(">") !== 0);
+            // What follows the quote is a blank separator line, so drop it - but only
+            // when it IS one. Dropping the first kept line unconditionally deleted the
+            // whole reply whenever the author typed it directly under the quote, and
+            // handleReview then returned early without posting anything at all.
+            while (kept.length && !kept[0].trim())
+                kept.shift();
+            commentBody = kept.join("\n");
         }
         commentBody = commentBody.replace(/>/g, "");
         commentBody = commentBody.replace(/</g, "");
@@ -16710,53 +16740,53 @@ const stripQuotesAndArrows = (body) => {
     return commentBody;
 };
 exports.stripQuotesAndArrows = stripQuotesAndArrows;
-// Convert markdown images/hyperlinks/bare links into Asana anchor tags.
+// Convert markdown images/hyperlinks/bare links into Asana anchor tags, leaving
+// each finished anchor parked behind a placeholder. Nothing that runs afterwards
+// - a later pattern here, or replaceMentions - can then match a url sitting
+// inside an href we just wrote, which is what produced nested `<a <a href=...>`
+// and mentions spliced into link targets.
+const linkifyToPlaceholders = (body) => {
+    const anchors = [];
+    const stash = (html) => {
+        anchors.push(html);
+        return `${SENTINEL}${anchors.length - 1}${SENTINEL}`;
+    };
+    const text = body
+        .split(SENTINEL)
+        .join("")
+        .replace(IMAGE_MARKUP, (_match, url) => stash(anchor(url, "Image Attachment")))
+        .replace(MARKDOWN_LINK, (_match, label, url) => stash(anchor(url, label || `${siteName(url)} Link`)))
+        .replace(BARE_URL, (url) => stash(anchor(url.replace(/\/$/, ""), `${siteName(url)} Link`)));
+    return { text, anchors };
+};
+exports.linkifyToPlaceholders = linkifyToPlaceholders;
+const restoreAnchors = (text, anchors) => text.replace(STASHED_ANCHOR, (match, index) => {
+    const html = anchors[Number(index)];
+    return html === undefined ? match : html;
+});
+exports.restoreAnchors = restoreAnchors;
 const linkifyBody = (body) => {
-    let commentBody = body;
-    const links = commentBody.match(/\bhttps?:\/\/\S+[\w|/]/gi) || [];
-    for (const link of links) {
-        const linkRegex = link.replace(/\//gi, "\\/");
-        const linkSite = link.replace(/.+\/\/|www.|\..+/g, "");
-        const capitalLinkSite = linkSite.charAt(0).toUpperCase() + linkSite.slice(1);
-        if (commentBody.includes(`src="${link}"`)) {
-            const imageRegex = new RegExp(`img[\\w\\W]+?${linkRegex}"`, "gi");
-            commentBody = commentBody.replace(imageRegex, `<a href="${link}"> 🔗 Image Attachment 🔗 </a>`);
-        }
-        else if (commentBody.includes(`(${link})`)) {
-            const hyperlinkRegex = new RegExp(`\\[(.+?)\\]\\(${linkRegex}\\)`, "gi");
-            const match = hyperlinkRegex.exec(commentBody);
-            const label = match ? match[1] : `${capitalLinkSite} Link`;
-            commentBody = commentBody.replace(hyperlinkRegex, `<a href="${link}"> 🔗 ${label} 🔗 </a>`);
-        }
-        else {
-            let cleanLink = link;
-            let defaultRegex = new RegExp(`\\S*?(${linkRegex}[^\\/]).*?`, "gi");
-            const match = commentBody.match(defaultRegex);
-            if (!match) {
-                cleanLink = cleanLink.replace(/\?/gi, "\\?");
-                defaultRegex = new RegExp(`\\S*?(${cleanLink}).*?`, "gi");
-            }
-            const href = link.replace(/\/$/, "");
-            commentBody = commentBody.replace(defaultRegex, `<a href="${href}"> 🔗 ${capitalLinkSite} Link 🔗 </a>`);
-        }
-    }
-    return commentBody;
+    const { text, anchors } = (0, exports.linkifyToPlaceholders)(body);
+    return (0, exports.restoreAnchors)(text, anchors);
 };
 exports.linkifyBody = linkifyBody;
 // Replace @github-name mentions with Asana profile links; returns the Asana
 // ids of mentioned users so callers can add them as followers.
 const replaceMentions = (body) => {
-    let commentBody = body;
     const mentionedAsanaIds = [];
-    const mentions = commentBody.match(/@\S+\w/gi) || [];
-    for (const mention of mentions) {
+    // Each occurrence is resolved where it sits. Replacing by string needle hit
+    // the FIRST match anywhere in the body, so a url containing a known handle
+    // took the replacement into its own href and the real mention further down
+    // was the one left as plain text.
+    const withMentions = body.replace(MENTION, (mention) => {
         const mentionUserObj = utils.findUserByGithubName(mention.substring(1));
         if (!mentionUserObj)
-            continue;
-        mentionedAsanaIds.push(mentionUserObj.asanaId);
-        commentBody = commentBody.replace(mention, `<a href="${MENTION_BASE_URL}${mentionUserObj.asanaUrlId}">@${mentionUserObj.asanaName}</a>`);
-    }
-    return { body: commentBody, mentionedAsanaIds };
+            return mention;
+        if (!mentionedAsanaIds.includes(mentionUserObj.asanaId))
+            mentionedAsanaIds.push(mentionUserObj.asanaId);
+        return `<a href="${MENTION_BASE_URL}${mentionUserObj.asanaUrlId}">@${mentionUserObj.asanaName}</a>`;
+    });
+    return { body: withMentions, mentionedAsanaIds };
 };
 exports.replaceMentions = replaceMentions;
 
@@ -16813,21 +16843,27 @@ const utils = __importStar(__nccwpck_require__(8541));
 // CI runs fire on these pull_request actions in the consumer workflows.
 const CI_ACTIONS = ["opened", "synchronize", "reopened", "ready_for_review"];
 const CI_SUBTASK_NAME = "Automated CI Testing";
+const SANDBOX_HEADING = "## CI/QA Testing Sandbox";
 const editPrDescription = (event) => __awaiter(void 0, void 0, void 0, function* () {
     const today = new Date();
     const [date, time] = today.toISOString().split("T");
     const formattedDate = `${date} ${time.substring(0, 5)} UTC`;
-    const sandboxSection = `## CI/QA Testing Sandbox (${formattedDate}) ## \n ${event.prDescriptionInput}`;
+    const sandboxSection = `${SANDBOX_HEADING} (${formattedDate}) ## \n ${event.prDescriptionInput}`;
     const githubUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
     const prResponse = yield githubAxios_1.default.get(githubUrl);
     const currentBody = prResponse.data.body || "";
-    let body = "";
-    if (currentBody.includes("A list of unique sandbox sites was created")) {
-        body = currentBody.replace(/## CI\/QA Testing Sandbox(.|\n|\r)*Please comment and open a new review on this pull request if you find any issues when testing the preview release zip files./gi, sandboxSection);
-    }
-    else {
-        body = currentBody.concat(`\n\n${sandboxSection}`);
-    }
+    // The block is always appended at the end, so the one to refresh is the
+    // trailing one. Finding it by index rather than by regex fixes three things at
+    // once: the input is no longer a replacement string (a `$&` in it copied the
+    // matched block back into the body), a greedy span no longer runs to the LAST
+    // block and deletes the author's own sections in between, and the guard now
+    // tests exactly what the replacement targets - previously it checked for a
+    // sentence the pattern did not require, so trimming that sentence by hand made
+    // the block silently stop refreshing forever.
+    const start = currentBody.lastIndexOf(SANDBOX_HEADING);
+    const body = start === -1
+        ? `${currentBody}\n\n${sandboxSection}`
+        : `${currentBody.slice(0, start)}${sandboxSection}`;
     yield githubAxios_1.default.patch(githubUrl, { body });
 });
 const handleCiStatus = (event) => __awaiter(void 0, void 0, void 0, function* () {
@@ -16968,10 +17004,13 @@ const postCommentToTasks = (event, commentText) => __awaiter(void 0, void 0, voi
 });
 exports.postCommentToTasks = postCommentToTasks;
 const buildFormattedBody = (event) => {
-    let body = format.stripQuotesAndArrows(event.rawCommentBody);
-    body = format.linkifyBody(body);
-    const { body: withMentions, mentionedAsanaIds } = format.replaceMentions(body);
-    return { body: withMentions, mentionedAsanaIds };
+    const stripped = format.stripQuotesAndArrows(event.rawCommentBody);
+    // Mentions are resolved while the anchors are still placeholders, so a handle
+    // that happens to appear inside a url cannot be replaced inside its href -
+    // which produced malformed html_text that Asana rejects outright.
+    const { text, anchors } = format.linkifyToPlaceholders(stripped);
+    const { body, mentionedAsanaIds } = format.replaceMentions(text);
+    return { body: format.restoreAnchors(body, anchors), mentionedAsanaIds };
 };
 exports.buildFormattedBody = buildFormattedBody;
 const handleComment = (event) => __awaiter(void 0, void 0, void 0, function* () {
@@ -17727,7 +17766,12 @@ exports.isAxiosError = isAxiosError;
 const findUserByGithubName = (githubName) => users_1.users.find((user) => user.githubName === githubName);
 exports.findUserByGithubName = findUserByGithubName;
 const extractAsanaTaskIds = (description) => {
-    const links = (description === null || description === void 0 ? void 0 : description.match(/\bhttps?:\/\/\b(app\.asana\.com)\b\S+/gi)) || [];
+    // A url ends at whitespace or at any bracket or quote, the same boundary the
+    // comment formatter uses. `\S+` ran straight through the `](` of a markdown
+    // link, so two tasks written as `[url-a](url-b)` scraped as one string and the
+    // PR silently synced to url-a's task alone.
+    const links = (description === null || description === void 0 ? void 0 : description.match(/\bhttps?:\/\/\b(app\.asana\.com)\b[^\s<>[\]"]+/gi)) ||
+        [];
     const ids = links
         .map((link) => {
         const match = link.match(/task\/(\d+)|\/0\/\d+\/(\d+)/);
