@@ -55,11 +55,19 @@ export const postCommentToTasks = async (
 };
 
 export const buildFormattedBody = (event: SyncEvent) => {
-  let body = format.stripQuotesAndArrows(event.rawCommentBody);
-  body = format.linkifyBody(body);
-  const { body: withMentions, mentionedAsanaIds } =
-    format.replaceMentions(body);
-  return { body: withMentions, mentionedAsanaIds };
+  let mentionedAsanaIds: string[] = [];
+  const body = format.linkifyBody(
+    format.stripQuotesAndArrows(event.rawCommentBody),
+    // Runs while the anchors are still placeholders, so a handle that happens to
+    // appear inside a url cannot be linked inside that url's href - which
+    // produced html_text Asana rejects, and left the real mention as plain text.
+    (text) => {
+      const mentions = format.replaceMentions(text);
+      mentionedAsanaIds = mentions.mentionedAsanaIds;
+      return mentions.body;
+    }
+  );
+  return { body, mentionedAsanaIds };
 };
 
 export const handleComment = async (event: SyncEvent) => {

@@ -20,11 +20,22 @@ const editPrDescription = async (event: SyncEvent) => {
   const prResponse = await githubAxios.get(githubUrl);
   const currentBody = prResponse.data.body || "";
 
+  // The span and the guard look wrong in isolation and are not: ssa-plugin
+  // writes a block TWICE per CI run (ci.yml:956 untested zips, ci.yml:1672
+  // sandbox sites), and both end with the same closing sentence. "A list of
+  // unique sandbox sites was created" appears only in the second, so the guard
+  // reads as "has the second job run yet". First job of a run collapses both
+  // stale blocks into its own; second job finds no guard string and appends.
+  // Two blocks, both current. Narrowing either half to one block leaves the
+  // first frozen with its expiring S3 links - or deletes it outright.
+  //
+  // Only the replacement changes: as a string, a `$&` in prDescriptionInput
+  // expanded to the whole matched block and copied it back into the PR body.
   let body = "";
   if (currentBody.includes("A list of unique sandbox sites was created")) {
     body = currentBody.replace(
       /## CI\/QA Testing Sandbox(.|\n|\r)*Please comment and open a new review on this pull request if you find any issues when testing the preview release zip files./gi,
-      sandboxSection
+      () => sandboxSection
     );
   } else {
     body = currentBody.concat(`\n\n${sandboxSection}`);

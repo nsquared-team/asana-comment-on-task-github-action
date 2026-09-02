@@ -37,6 +37,7 @@ const asanaPut = asanaAxios.put as jest.Mock;
 const asanaDelete = asanaAxios.delete as jest.Mock;
 const githubGet = githubAxios.get as jest.Mock;
 const githubPost = githubAxios.post as jest.Mock;
+const githubPatch = githubAxios.patch as jest.Mock;
 
 const SECTION_GIDS: { [name: string]: string } = {
   Next: "sec-next",
@@ -288,6 +289,72 @@ describe("CI status", () => {
       baseEvent({ action: "synchronize", ciStatus: "approved", isDraft: false })
     );
     expect(movesTo("Testing / Review")).toHaveLength(1);
+  });
+});
+
+describe("the CI sandbox block in the PR description", () => {
+  const HEADING = "## CI/QA Testing Sandbox";
+  const TAIL =
+    "Please comment and open a new review on this pull request if you find any issues when testing the preview release zip files.";
+  const GUARD = "A list of unique sandbox sites was created";
+
+  // ssa-plugin's two writes per CI run, structurally as ci.yml sends them: the
+  // untested-zips job first, the sandbox-sites job second. Both end with TAIL;
+  // only the second carries GUARD.
+  const untestedZips = (run: string) =>
+    `UNTESTED ZIP FILES run=${run}\n${TAIL}`;
+  const sandboxSites = (run: string) => `${GUARD} run=${run}\n${TAIL}`;
+
+  const edit = async (currentBody: string, prDescriptionInput: string) => {
+    jest.clearAllMocks();
+    mockAsana();
+    githubGet.mockResolvedValue({ data: { body: currentBody } });
+    githubPatch.mockResolvedValue({ data: {} });
+    await handleCiStatus(
+      baseEvent({
+        action: "synchronize",
+        ciStatus: "edit_pr_description",
+        prDescriptionInput,
+      })
+    );
+    return githubPatch.mock.calls[0][1].body as string;
+  };
+
+  const stamps = (body: string) =>
+    [...body.matchAll(/run=([A-Z-]+)/g)].map((match) => match[1]);
+
+  test("a CI run leaves two blocks and both are from that run", async () => {
+    // The consumer writes twice per run, so a refresh that only touches ONE
+    // block leaves the untested-zips half frozen - stale S3 links that expire
+    // in seven days - and a refresh that replaces from the FIRST heading
+    // deletes that half outright. Both were shipped and both were wrong.
+    let body = "Author's description.\n\nWhat this PR does.";
+    for (const run of ["RUN-A", "RUN-B"]) {
+      body = await edit(body, untestedZips(run));
+      body = await edit(body, sandboxSites(run));
+    }
+
+    expect(body.split(HEADING)).toHaveLength(3); // two headings
+    expect(stamps(body)).toEqual(["RUN-B", "RUN-B"]);
+    expect(body).toContain("UNTESTED ZIP FILES run=RUN-B");
+    expect(body).toContain(`${GUARD} run=RUN-B`);
+    expect(body).not.toContain("RUN-A");
+    expect(body).toContain("Author's description.");
+  });
+
+  test("a $& in the sandbox input is written literally, not expanded into the match", async () => {
+    const body = await edit(
+      `intro\n\n${HEADING} (old) ## \n ${sandboxSites("RUN-A")}`,
+      "$&SANDBOX"
+    );
+    expect(body).toContain("$&SANDBOX");
+    expect(body).not.toContain(GUARD);
+  });
+
+  test("the first run appends the block instead of replacing anything", async () => {
+    const body = await edit("## Summary\nwhat this PR does", "first");
+    expect(body).toContain("## Summary");
+    expect(body).toContain("first");
   });
 });
 
@@ -1171,5 +1238,91 @@ describe("a merge turns the open reviews into FYI reviews", () => {
     await handlePullRequest(closed(false));
     expect(renames()).toHaveLength(0);
     expect(asanaDelete).toHaveBeenCalledWith("/tasks/open-review");
+  });
+});
+
+describe("a review body that links to its own pull request", () => {
+  // otto's code-review report opens with a markdown link labelled with the PR
+  // url itself. The scrape read both urls plus the `](` between them as one
+  // "url" and handed it to new RegExp, whose `(` opened a group nothing closed.
+  // The throw propagated out of handleReview into run.ts, which setFailed the
+  // action: the review never reached Asana and the check went red on every
+  // report - PRs 4054, 4184, 4237, 4308, 4326, 4515 and 4521 all hit it.
+  const PR_URL = "https://github.com/nsquared-team/blinkmetrics-app/pull/4237";
+  const OTTO_REPORT = [
+    "# Code Review Report",
+    "",
+    `**Fix scorecard digest giving up (and lying) when data is permanently stale** \u00b7 [${PR_URL}](${PR_URL}) \u00b7 @ali-al-najjar`,
+  ].join("\n");
+
+  const postedStory = () =>
+    asanaPost.mock.calls.filter(([url]: [string]) => url.includes("/stories"));
+
+  test("otto's report is posted to Asana instead of failing the action", async () => {
+    mockAsana();
+    await handleReview(
+      baseEvent({
+        eventName: "pull_request_review",
+        action: "submitted",
+        reviewState: "changes_requested",
+        username: "otto-bot-git",
+        // buildFormattedBody reads rawCommentBody; reviewBody is written by
+        // buildEvent and read nowhere, so setting only it would prove nothing.
+        rawCommentBody: OTTO_REPORT,
+        commentUrl: `${PR_URL}#pullrequestreview-1`,
+      })
+    );
+
+    expect(postedStory()).toHaveLength(1);
+    const html = postedStory()[0][1].data.html_text as string;
+    expect(html).toContain(`<a href="${PR_URL}">`);
+    expect(html).not.toContain(`](${PR_URL})`);
+  });
+});
+
+describe("mentions and links in the same comment", () => {
+  const storyHtml = () =>
+    asanaPost.mock.calls
+      .filter(([url]: [string]) => url.includes("/stories"))
+      .map(([, payload]: [string, any]) => payload.data.html_text)[0] as string;
+
+  const comment = (body: string) =>
+    handleComment(
+      baseEvent({
+        eventName: "issue_comment",
+        action: "created",
+        rawCommentBody: body,
+        commentUrl: "https://github.com/o/r/pull/1#issuecomment-1",
+      })
+    );
+
+  test("a handle inside a url is not linked inside that url's href", async () => {
+    // Mentions were replaced by string needle, which hits the FIRST match
+    // anywhere - the one inside the url. The href came back with an Asana
+    // anchor spliced into it (html_text Asana rejects outright) and the real
+    // mention below was the one left as plain text.
+    mockAsana();
+    await comment(
+      "see https://x.com/@MariamElZaatari/status/1 and cc @MariamElZaatari"
+    );
+
+    const html = storyHtml();
+    expect(html).toContain(
+      '<a href="https://x.com/@MariamElZaatari/status/1">'
+    );
+    expect(html).not.toMatch(/<a href="[^"]*<a /);
+    expect(html).not.toContain("cc @MariamElZaatari");
+  });
+
+  test("a handle inside a markdown link's label is left as text", async () => {
+    // Deliberate: the label sits inside a finished anchor and linking it would
+    // nest one anchor inside another, which is what the old code produced. The
+    // trade is that a mention written this way adds no follower.
+    mockAsana();
+    await comment("[ping @MariamElZaatari](https://example.com/x)");
+
+    const html = storyHtml();
+    expect(html).toContain("ping @MariamElZaatari");
+    expect(html).not.toMatch(/<a href="[^"]*<a /);
   });
 });
