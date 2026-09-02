@@ -32,6 +32,16 @@ describe("extractAsanaTaskIds", () => {
     ]);
   });
 
+  test("a markdown link pointing at a different task than its label finds both", () => {
+    // `\S+` ran through the `](`, so the two urls scraped as one string and only
+    // the label's task was ever synced.
+    expect(
+      utils.extractAsanaTaskIds(
+        "[https://app.asana.com/0/111/222](https://app.asana.com/0/333/444)"
+      )
+    ).toEqual(["222", "444"]);
+  });
+
   test("returns empty for no links or empty body", () => {
     expect(utils.extractAsanaTaskIds(undefined)).toEqual([]);
     expect(utils.extractAsanaTaskIds("no links here")).toEqual([]);
