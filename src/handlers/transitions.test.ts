@@ -1173,3 +1173,62 @@ describe("a merge turns the open reviews into FYI reviews", () => {
     expect(asanaDelete).toHaveBeenCalledWith("/tasks/open-review");
   });
 });
+
+describe("overlapping runs leave one Review subtask per reviewer", () => {
+  const reviewFor = (gid: string, createdAt: string) => ({
+    gid,
+    name: "Review",
+    resource_subtype: "approval",
+    completed: false,
+    created_by: { gid: OTTO_ASANA_ID },
+    assignee: { gid: PEER.asanaId },
+    created_at: createdAt,
+  });
+
+  // The existence check before the create sees nothing; only the re-read
+  // after this run's create sees what the parallel run created too.
+  const mockSubtasksAfterCreate = (afterCreate: any[]) => {
+    mockAsana();
+    asanaGet.mockImplementation((url: string) => {
+      if (url.includes("/subtasks")) {
+        const created = asanaPost.mock.calls.some(([postUrl]: [string]) =>
+          postUrl.includes("/tasks/111/subtasks")
+        );
+        return Promise.resolve({ data: { data: created ? afterCreate : [] } });
+      }
+      if (url.includes("/sections"))
+        return Promise.resolve({ data: { data: sectionsPayload } });
+      return Promise.resolve({
+        data: {
+          data: {
+            memberships: [
+              { section: { name: "Next" }, project: { gid: "proj-1" } },
+            ],
+          },
+        },
+      });
+    });
+  };
+
+  test("the newer duplicate is deleted whichever run created it", async () => {
+    mockSubtasksAfterCreate([
+      reviewFor("review-newer", "2026-09-02T21:02:19.400Z"),
+      reviewFor("review-older", "2026-09-02T21:02:19.100Z"),
+    ]);
+    await handlePullRequest(
+      baseEvent({ action: "ready_for_review", requestedReviewers: [PEER] })
+    );
+    expect(asanaDelete).toHaveBeenCalledTimes(1);
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/review-newer");
+  });
+
+  test("a run with no rival deletes nothing", async () => {
+    mockSubtasksAfterCreate([
+      reviewFor("review-only", "2026-09-02T21:02:19.100Z"),
+    ]);
+    await handlePullRequest(
+      baseEvent({ action: "ready_for_review", requestedReviewers: [PEER] })
+    );
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+});

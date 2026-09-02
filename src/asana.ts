@@ -229,6 +229,30 @@ export const addApprovalTask = async (
   await cleanupApprovalTasks(taskId);
 };
 
+const createdBefore = (a: any, b: any) => {
+  if (a.created_at !== b.created_at)
+    return a.created_at < b.created_at ? -1 : 1;
+  return a.gid.length - b.gid.length || (a.gid < b.gid ? -1 : 1);
+};
+
+// Asana enforces no uniqueness on subtasks, and two sync runs for one PR
+// routinely overlap (ready_for_review and review_requested land in the same
+// second), so both pass the existence check in addRequestedReview before
+// either create is visible. Re-reading after the create and keeping only the
+// oldest pending "Review" per assignee makes the racers converge: each sees
+// the same set and picks the same survivor, and a delete that loses the race
+// 404s and is skipped.
+const deleteDuplicateReviewSubtasks = async (taskId: string, reviewer: any) => {
+  const subtasks = await getAllApprovalSubtasks(taskId, ottoUser());
+  const reviews = subtasks
+    .filter(
+      (subtask: any) =>
+        subtask.name === "Review" && subtask.assignee?.gid === reviewer?.asanaId
+    )
+    .sort(createdBefore);
+  await deleteApprovalTasks(reviews.slice(1));
+};
+
 export const addRequestedReview = async (
   taskId: string,
   reviewer: any,
@@ -239,6 +263,7 @@ export const addRequestedReview = async (
 
   const notes = `<a href='${pullRequestUrl}'> Click Here To Start Your Review </a>`;
   await addApprovalTask(taskId, reviewer, "Review", "pending", notes);
+  await deleteDuplicateReviewSubtasks(taskId, reviewer);
 };
 
 export const updateApprovalSubtask = async (

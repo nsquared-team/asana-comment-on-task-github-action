@@ -16256,12 +16256,32 @@ const addApprovalTask = (taskId, assignee, taskName, approvalStatus, notes) => _
     yield (0, exports.cleanupApprovalTasks)(taskId);
 });
 exports.addApprovalTask = addApprovalTask;
+const createdBefore = (a, b) => {
+    if (a.created_at !== b.created_at)
+        return a.created_at < b.created_at ? -1 : 1;
+    return a.gid.length - b.gid.length || (a.gid < b.gid ? -1 : 1);
+};
+// Asana enforces no uniqueness on subtasks, and two sync runs for one PR
+// routinely overlap (ready_for_review and review_requested land in the same
+// second), so both pass the existence check in addRequestedReview before
+// either create is visible. Re-reading after the create and keeping only the
+// oldest pending "Review" per assignee makes the racers converge: each sees
+// the same set and picks the same survivor, and a delete that loses the race
+// 404s and is skipped.
+const deleteDuplicateReviewSubtasks = (taskId, reviewer) => __awaiter(void 0, void 0, void 0, function* () {
+    const subtasks = yield (0, exports.getAllApprovalSubtasks)(taskId, (0, exports.ottoUser)());
+    const reviews = subtasks
+        .filter((subtask) => { var _a; return subtask.name === "Review" && ((_a = subtask.assignee) === null || _a === void 0 ? void 0 : _a.gid) === (reviewer === null || reviewer === void 0 ? void 0 : reviewer.asanaId); })
+        .sort(createdBefore);
+    yield (0, exports.deleteApprovalTasks)(reviews.slice(1));
+});
 const addRequestedReview = (taskId, reviewer, pullRequestUrl) => __awaiter(void 0, void 0, void 0, function* () {
     const existing = yield (0, exports.getApprovalSubtask)(taskId, false, reviewer);
     if (existing)
         return;
     const notes = `<a href='${pullRequestUrl}'> Click Here To Start Your Review </a>`;
     yield (0, exports.addApprovalTask)(taskId, reviewer, "Review", "pending", notes);
+    yield deleteDuplicateReviewSubtasks(taskId, reviewer);
 });
 exports.addRequestedReview = addRequestedReview;
 const updateApprovalSubtask = (subtaskGid, fields) => __awaiter(void 0, void 0, void 0, function* () {
@@ -16323,7 +16343,7 @@ exports.PROJECTS_URL = "/projects/";
 exports.TASKS_URL = "/tasks/";
 exports.SECTIONS_URL = "/sections/";
 exports.STORIES_URL = "/stories/";
-exports.SUBTASKS_URL = "/subtasks?limit=100&opt_fields=completed,resource_subtype,assignee,created_by,name,approval_status";
+exports.SUBTASKS_URL = "/subtasks?limit=100&opt_fields=completed,resource_subtype,assignee,created_by,created_at,name,approval_status";
 exports.STORIES_LIST_PARAMS = "?limit=100";
 exports.ADD_FOLLOWERS_URL = "/addFollowers";
 exports.ADD_TASK_URL = "/addTask";
