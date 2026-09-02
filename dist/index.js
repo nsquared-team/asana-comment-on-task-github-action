@@ -16682,7 +16682,7 @@ var __importStar = (this && this.__importStar) || function (mod) {
     return result;
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.replaceMentions = exports.linkifyBody = exports.restoreAnchors = exports.linkifyToPlaceholders = exports.stripQuotesAndArrows = exports.isReplyComment = exports.userMentionHTML = void 0;
+exports.replaceMentions = exports.linkifyBody = exports.stripQuotesAndArrows = exports.isReplyComment = exports.userMentionHTML = void 0;
 const utils = __importStar(__nccwpck_require__(8541));
 const MENTION_BASE_URL = "https://app.asana.com/0/";
 // Comment text is data, never a pattern. Every regex below is a literal and
@@ -16740,34 +16740,29 @@ const stripQuotesAndArrows = (body) => {
     return commentBody;
 };
 exports.stripQuotesAndArrows = stripQuotesAndArrows;
-// Convert markdown images/hyperlinks/bare links into Asana anchor tags, leaving
-// each finished anchor parked behind a placeholder. Nothing that runs afterwards
-// - a later pattern here, or replaceMentions - can then match a url sitting
-// inside an href we just wrote, which is what produced nested `<a <a href=...>`
-// and mentions spliced into link targets.
-const linkifyToPlaceholders = (body) => {
+// Convert markdown images/hyperlinks/bare links into Asana anchor tags.
+//
+// Each finished anchor is parked behind a placeholder until the very end, so no
+// later pattern can match a url sitting inside an href this function just wrote
+// - the cause of nested `<a <a href=...>` on a repeated url. `transform` runs
+// while the anchors are still parked, which is the only safe place to rewrite
+// the surrounding text: replaceMentions run afterwards would splice a mention
+// into a link target instead.
+const linkifyBody = (body, transform = (text) => text) => {
     const anchors = [];
     const stash = (html) => {
         anchors.push(html);
         return `${SENTINEL}${anchors.length - 1}${SENTINEL}`;
     };
-    const text = body
+    const parked = body
         .split(SENTINEL)
         .join("")
         .replace(IMAGE_MARKUP, (_match, url) => stash(anchor(url, "Image Attachment")))
         .replace(MARKDOWN_LINK, (_match, label, url) => stash(anchor(url, label || `${siteName(url)} Link`)))
         .replace(BARE_URL, (url) => stash(anchor(url.replace(/\/$/, ""), `${siteName(url)} Link`)));
-    return { text, anchors };
-};
-exports.linkifyToPlaceholders = linkifyToPlaceholders;
-const restoreAnchors = (text, anchors) => text.replace(STASHED_ANCHOR, (match, index) => {
-    const html = anchors[Number(index)];
-    return html === undefined ? match : html;
-});
-exports.restoreAnchors = restoreAnchors;
-const linkifyBody = (body) => {
-    const { text, anchors } = (0, exports.linkifyToPlaceholders)(body);
-    return (0, exports.restoreAnchors)(text, anchors);
+    // Every placeholder was written by the stash above and its index is in range,
+    // because any the author typed were stripped before the first replace.
+    return transform(parked).replace(STASHED_ANCHOR, (_match, index) => anchors[Number(index)]);
 };
 exports.linkifyBody = linkifyBody;
 // Replace @github-name mentions with Asana profile links; returns the Asana
@@ -16843,27 +16838,32 @@ const utils = __importStar(__nccwpck_require__(8541));
 // CI runs fire on these pull_request actions in the consumer workflows.
 const CI_ACTIONS = ["opened", "synchronize", "reopened", "ready_for_review"];
 const CI_SUBTASK_NAME = "Automated CI Testing";
-const SANDBOX_HEADING = "## CI/QA Testing Sandbox";
 const editPrDescription = (event) => __awaiter(void 0, void 0, void 0, function* () {
     const today = new Date();
     const [date, time] = today.toISOString().split("T");
     const formattedDate = `${date} ${time.substring(0, 5)} UTC`;
-    const sandboxSection = `${SANDBOX_HEADING} (${formattedDate}) ## \n ${event.prDescriptionInput}`;
+    const sandboxSection = `## CI/QA Testing Sandbox (${formattedDate}) ## \n ${event.prDescriptionInput}`;
     const githubUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
     const prResponse = yield githubAxios_1.default.get(githubUrl);
     const currentBody = prResponse.data.body || "";
-    // The block is always appended at the end, so the one to refresh is the
-    // trailing one. Finding it by index rather than by regex fixes three things at
-    // once: the input is no longer a replacement string (a `$&` in it copied the
-    // matched block back into the body), a greedy span no longer runs to the LAST
-    // block and deletes the author's own sections in between, and the guard now
-    // tests exactly what the replacement targets - previously it checked for a
-    // sentence the pattern did not require, so trimming that sentence by hand made
-    // the block silently stop refreshing forever.
-    const start = currentBody.lastIndexOf(SANDBOX_HEADING);
-    const body = start === -1
-        ? `${currentBody}\n\n${sandboxSection}`
-        : `${currentBody.slice(0, start)}${sandboxSection}`;
+    // The span and the guard look wrong in isolation and are not: ssa-plugin
+    // writes a block TWICE per CI run (ci.yml:956 untested zips, ci.yml:1672
+    // sandbox sites), and both end with the same closing sentence. "A list of
+    // unique sandbox sites was created" appears only in the second, so the guard
+    // reads as "has the second job run yet". First job of a run collapses both
+    // stale blocks into its own; second job finds no guard string and appends.
+    // Two blocks, both current. Narrowing either half to one block leaves the
+    // first frozen with its expiring S3 links - or deletes it outright.
+    //
+    // Only the replacement changes: as a string, a `$&` in prDescriptionInput
+    // expanded to the whole matched block and copied it back into the PR body.
+    let body = "";
+    if (currentBody.includes("A list of unique sandbox sites was created")) {
+        body = currentBody.replace(/## CI\/QA Testing Sandbox(.|\n|\r)*Please comment and open a new review on this pull request if you find any issues when testing the preview release zip files./gi, () => sandboxSection);
+    }
+    else {
+        body = currentBody.concat(`\n\n${sandboxSection}`);
+    }
     yield githubAxios_1.default.patch(githubUrl, { body });
 });
 const handleCiStatus = (event) => __awaiter(void 0, void 0, void 0, function* () {
@@ -17004,13 +17004,17 @@ const postCommentToTasks = (event, commentText) => __awaiter(void 0, void 0, voi
 });
 exports.postCommentToTasks = postCommentToTasks;
 const buildFormattedBody = (event) => {
-    const stripped = format.stripQuotesAndArrows(event.rawCommentBody);
-    // Mentions are resolved while the anchors are still placeholders, so a handle
-    // that happens to appear inside a url cannot be replaced inside its href -
-    // which produced malformed html_text that Asana rejects outright.
-    const { text, anchors } = format.linkifyToPlaceholders(stripped);
-    const { body, mentionedAsanaIds } = format.replaceMentions(text);
-    return { body: format.restoreAnchors(body, anchors), mentionedAsanaIds };
+    let mentionedAsanaIds = [];
+    const body = format.linkifyBody(format.stripQuotesAndArrows(event.rawCommentBody), 
+    // Runs while the anchors are still placeholders, so a handle that happens to
+    // appear inside a url cannot be linked inside that url's href - which
+    // produced html_text Asana rejects, and left the real mention as plain text.
+    (text) => {
+        const mentions = format.replaceMentions(text);
+        mentionedAsanaIds = mentions.mentionedAsanaIds;
+        return mentions.body;
+    });
+    return { body, mentionedAsanaIds };
 };
 exports.buildFormattedBody = buildFormattedBody;
 const handleComment = (event) => __awaiter(void 0, void 0, void 0, function* () {

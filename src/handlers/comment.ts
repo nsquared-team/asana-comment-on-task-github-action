@@ -55,13 +55,19 @@ export const postCommentToTasks = async (
 };
 
 export const buildFormattedBody = (event: SyncEvent) => {
-  const stripped = format.stripQuotesAndArrows(event.rawCommentBody);
-  // Mentions are resolved while the anchors are still placeholders, so a handle
-  // that happens to appear inside a url cannot be replaced inside its href -
-  // which produced malformed html_text that Asana rejects outright.
-  const { text, anchors } = format.linkifyToPlaceholders(stripped);
-  const { body, mentionedAsanaIds } = format.replaceMentions(text);
-  return { body: format.restoreAnchors(body, anchors), mentionedAsanaIds };
+  let mentionedAsanaIds: string[] = [];
+  const body = format.linkifyBody(
+    format.stripQuotesAndArrows(event.rawCommentBody),
+    // Runs while the anchors are still placeholders, so a handle that happens to
+    // appear inside a url cannot be linked inside that url's href - which
+    // produced html_text Asana rejects, and left the real mention as plain text.
+    (text) => {
+      const mentions = format.replaceMentions(text);
+      mentionedAsanaIds = mentions.mentionedAsanaIds;
+      return mentions.body;
+    }
+  );
+  return { body, mentionedAsanaIds };
 };
 
 export const handleComment = async (event: SyncEvent) => {

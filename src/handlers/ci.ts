@@ -10,31 +10,36 @@ const CI_ACTIONS = ["opened", "synchronize", "reopened", "ready_for_review"];
 
 const CI_SUBTASK_NAME = "Automated CI Testing";
 
-const SANDBOX_HEADING = "## CI/QA Testing Sandbox";
-
 const editPrDescription = async (event: SyncEvent) => {
   const today = new Date();
   const [date, time] = today.toISOString().split("T");
   const formattedDate = `${date} ${time.substring(0, 5)} UTC`;
-  const sandboxSection = `${SANDBOX_HEADING} (${formattedDate}) ## \n ${event.prDescriptionInput}`;
+  const sandboxSection = `## CI/QA Testing Sandbox (${formattedDate}) ## \n ${event.prDescriptionInput}`;
 
   const githubUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
   const prResponse = await githubAxios.get(githubUrl);
   const currentBody = prResponse.data.body || "";
 
-  // The block is always appended at the end, so the one to refresh is the
-  // trailing one. Finding it by index rather than by regex fixes three things at
-  // once: the input is no longer a replacement string (a `$&` in it copied the
-  // matched block back into the body), a greedy span no longer runs to the LAST
-  // block and deletes the author's own sections in between, and the guard now
-  // tests exactly what the replacement targets - previously it checked for a
-  // sentence the pattern did not require, so trimming that sentence by hand made
-  // the block silently stop refreshing forever.
-  const start = currentBody.lastIndexOf(SANDBOX_HEADING);
-  const body =
-    start === -1
-      ? `${currentBody}\n\n${sandboxSection}`
-      : `${currentBody.slice(0, start)}${sandboxSection}`;
+  // The span and the guard look wrong in isolation and are not: ssa-plugin
+  // writes a block TWICE per CI run (ci.yml:956 untested zips, ci.yml:1672
+  // sandbox sites), and both end with the same closing sentence. "A list of
+  // unique sandbox sites was created" appears only in the second, so the guard
+  // reads as "has the second job run yet". First job of a run collapses both
+  // stale blocks into its own; second job finds no guard string and appends.
+  // Two blocks, both current. Narrowing either half to one block leaves the
+  // first frozen with its expiring S3 links - or deletes it outright.
+  //
+  // Only the replacement changes: as a string, a `$&` in prDescriptionInput
+  // expanded to the whole matched block and copied it back into the PR body.
+  let body = "";
+  if (currentBody.includes("A list of unique sandbox sites was created")) {
+    body = currentBody.replace(
+      /## CI\/QA Testing Sandbox(.|\n|\r)*Please comment and open a new review on this pull request if you find any issues when testing the preview release zip files./gi,
+      () => sandboxSection
+    );
+  } else {
+    body = currentBody.concat(`\n\n${sandboxSection}`);
+  }
 
   await githubAxios.patch(githubUrl, { body });
 };

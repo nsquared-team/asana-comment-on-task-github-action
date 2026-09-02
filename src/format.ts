@@ -69,21 +69,25 @@ export const stripQuotesAndArrows = (body: string): string => {
   return commentBody;
 };
 
-// Convert markdown images/hyperlinks/bare links into Asana anchor tags, leaving
-// each finished anchor parked behind a placeholder. Nothing that runs afterwards
-// - a later pattern here, or replaceMentions - can then match a url sitting
-// inside an href we just wrote, which is what produced nested `<a <a href=...>`
-// and mentions spliced into link targets.
-export const linkifyToPlaceholders = (
-  body: string
-): { text: string; anchors: string[] } => {
+// Convert markdown images/hyperlinks/bare links into Asana anchor tags.
+//
+// Each finished anchor is parked behind a placeholder until the very end, so no
+// later pattern can match a url sitting inside an href this function just wrote
+// - the cause of nested `<a <a href=...>` on a repeated url. `transform` runs
+// while the anchors are still parked, which is the only safe place to rewrite
+// the surrounding text: replaceMentions run afterwards would splice a mention
+// into a link target instead.
+export const linkifyBody = (
+  body: string,
+  transform = (text: string) => text
+): string => {
   const anchors: string[] = [];
   const stash = (html: string) => {
     anchors.push(html);
     return `${SENTINEL}${anchors.length - 1}${SENTINEL}`;
   };
 
-  const text = body
+  const parked = body
     .split(SENTINEL)
     .join("")
     .replace(IMAGE_MARKUP, (_match: string, url: string) =>
@@ -96,18 +100,12 @@ export const linkifyToPlaceholders = (
       stash(anchor(url.replace(/\/$/, ""), `${siteName(url)} Link`))
     );
 
-  return { text, anchors };
-};
-
-export const restoreAnchors = (text: string, anchors: string[]): string =>
-  text.replace(STASHED_ANCHOR, (match: string, index: string) => {
-    const html = anchors[Number(index)];
-    return html === undefined ? match : html;
-  });
-
-export const linkifyBody = (body: string): string => {
-  const { text, anchors } = linkifyToPlaceholders(body);
-  return restoreAnchors(text, anchors);
+  // Every placeholder was written by the stash above and its index is in range,
+  // because any the author typed were stripped before the first replace.
+  return transform(parked).replace(
+    STASHED_ANCHOR,
+    (_match: string, index: string) => anchors[Number(index)]
+  );
 };
 
 // Replace @github-name mentions with Asana profile links; returns the Asana
