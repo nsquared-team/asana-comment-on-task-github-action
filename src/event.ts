@@ -49,7 +49,9 @@ export const buildEvent = (context: any): SyncEvent => {
   return {
     eventName: context.eventName,
     action: payload.action || "",
-    repoFullName: payload.repository?.full_name || "",
+    // A schedule payload carries no repository; the runner's env does.
+    repoFullName:
+      payload.repository?.full_name || process.env.GITHUB_REPOSITORY || "",
     taskIds: utils.extractAsanaTaskIds(pullRequest?.body),
     prNumber: pullRequest?.number,
     // issue_comment also fires on plain issues, which have no PR to read.

@@ -27,7 +27,9 @@ const latestDefinitiveReviews = (reviews: any[]) => {
 // Latest definitive review per mapped reviewer. A dismissed approval has to
 // stay in the tally as "no longer approved" - dropping the reviewer entirely
 // would let their vacated slot read as satisfied. Anyone GitHub still lists
-// as requested is pending, unless their latest review already approved.
+// as requested is pending, unless their latest review already approved: the
+// approval keeps gating the tiers, but being asked again is recorded, and
+// the task is not done while GitHub still waits on a tier reviewer.
 //
 // An approval is needed only once: it stands until its reviewer changes
 // their own verdict or the review is dismissed. A later changes-request
@@ -55,6 +57,7 @@ const tallyReviews = (reviews: any[], requestedReviewers: any[]) => {
         info: reviewer,
       };
     }
+    latestReviews[reviewer.githubName].requested = true;
   }
   return latestReviews;
 };
@@ -110,12 +113,19 @@ const tierVerdict = (latestReviews: { [githubName: string]: any }) => {
     (review: any) =>
       review.state === "APPROVED" && utils.isReviewTier(review.info)
   );
+  const awaitsTierReviewer = Object.values(latestReviews).some(
+    (review: any) => review.requested && utils.isReviewTier(review.info)
+  );
   return {
     approvedByPeer,
     approvedByDev,
     approvedByQa,
     fullyApproved:
-      hasTierApproval && approvedByPeer && approvedByDev && approvedByQa,
+      hasTierApproval &&
+      approvedByPeer &&
+      approvedByDev &&
+      approvedByQa &&
+      !awaitsTierReviewer,
   };
 };
 
@@ -326,8 +336,10 @@ export const reconcileReviewState = async (event: SyncEvent) => {
   // else happens to approve later.
   await resummonDismissedReviewers(githubUrl, latestReviews);
   const { fullyApproved } = tierVerdict(latestReviews);
+  // An approver asked again keeps their approval in the tally, but GitHub
+  // is waiting on them: their fresh Review subtask stays pending.
   const approvedAsanaIds = Object.values(latestReviews)
-    .filter((review: any) => review.state === "APPROVED")
+    .filter((review: any) => review.state === "APPROVED" && !review.requested)
     .map((review: any) => review.info.asanaId);
 
   const otto = asana.ottoUser();

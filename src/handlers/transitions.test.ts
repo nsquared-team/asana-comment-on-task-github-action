@@ -244,7 +244,7 @@ describe("ready for review", () => {
 
 describe("CI status", () => {
   test("rejected bumps the task to Next and records the verdict", async () => {
-    mockAsana();
+    mockAsana({ taskSection: "Testing / Review" });
     await handleCiStatus(
       baseEvent({ action: "synchronize", ciStatus: "rejected" })
     );
@@ -383,7 +383,7 @@ describe("reviews", () => {
   });
 
   test("changes_requested demotes to Next and reopens the task", async () => {
-    mockAsana();
+    mockAsana({ taskSection: "Testing / Review" });
     await handleReview(
       baseEvent({
         eventName: "pull_request_review",
@@ -469,6 +469,7 @@ describe("reviews", () => {
 
   test("otto requesting changes demotes the task, reopens it, and clears pending review subtasks", async () => {
     mockAsana({
+      taskSection: "Testing / Review",
       subtasks: [
         {
           gid: "rev-sub-1",
@@ -690,6 +691,29 @@ describe("bots are not a review tier", () => {
       username: login,
       commentUrl: `https://github.com/o/r/pull/42#review-${login}`,
     });
+
+  test("an approval while an earlier approver is asked again does not promote the task", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({
+      data: [
+        {
+          user: { login: PEER.githubName },
+          state: "APPROVED",
+          submitted_at: "2026-08-01T00:00:00Z",
+        },
+        {
+          user: { login: QA.githubName },
+          state: "APPROVED",
+          submitted_at: "2026-08-01T01:00:00Z",
+        },
+      ],
+    });
+    await handleReview({
+      ...approvalBy(QA.githubName),
+      requestedReviewers: [PEER],
+    });
+    expect(movesTo("Approved")).toHaveLength(0);
+  });
 
   test("an approval from otto alone never promotes the task", async () => {
     mockAsana();
@@ -1121,6 +1145,7 @@ describe("a merge conflict pauses the cascade", () => {
 
   test("otto's conflict alert clears the pending review subtasks but keeps the CI subtask", async () => {
     mockAsana({
+      taskSection: "Testing / Review",
       subtasks: [
         {
           gid: "rev-sub-1",
@@ -1663,6 +1688,39 @@ describe("every event restates the review state", () => {
     });
   });
 
+  test("restating a task already in Testing / Review leaves the board order alone", async () => {
+    mockAsana({
+      taskSection: "Testing / Review",
+      subtasks: [ciSubtask("approved")],
+    });
+    mockGithub(readyPr());
+    await reconcileReviewState(commentEvent);
+    expect(movesTo("Testing / Review")).toHaveLength(0);
+    expect(reviewCreates()).toHaveLength(1);
+  });
+
+  test("an approver asked to review again is waited on, not marked approved", async () => {
+    mockAsana({
+      subtasks: [
+        {
+          gid: "rev-sub-1",
+          name: "Review",
+          resource_subtype: "approval",
+          completed: false,
+          created_by: { gid: OTTO_ASANA_ID },
+          assignee: { gid: PEER.asanaId },
+        },
+      ],
+    });
+    mockGithub(readyPr(), [peerApproved]);
+    await reconcileReviewState(commentEvent);
+    expect(asanaPut).not.toHaveBeenCalledWith("/tasks/rev-sub-1", {
+      data: { approval_status: "approved" },
+    });
+    expect(movesTo("Approved")).toHaveLength(0);
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+  });
+
   test("a dismissed reviewer is re-requested by the re-check itself", async () => {
     mockAsana();
     mockGithub(readyPr({ requested_reviewers: [] }), [
@@ -1710,6 +1768,18 @@ describe("a reviewer taken off the pull request", () => {
     expect(asanaDelete).not.toHaveBeenCalledWith("/tasks/dev-sub");
   });
 
+  test("an approval subtask somebody else assigned to that reviewer survives", async () => {
+    mockAsana({
+      subtasks: [
+        { ...pending("human-sub", PEER.asanaId), created_by: { gid: "human" } },
+      ],
+    });
+    await handlePullRequest(
+      baseEvent({ action: "review_request_removed", eventReviewer: PEER })
+    );
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+
   test("a team request removed carries no reviewer and deletes nothing", async () => {
     mockAsana({ subtasks: [pending("peer-sub", PEER.asanaId)] });
     await handlePullRequest(
@@ -1731,11 +1801,23 @@ describe("the sweep restates every open pull request", () => {
     mergeable: true,
     requested_reviewers: requestedReviewers,
   });
+  // A schedule payload carries nothing but the cron; the repository comes
+  // from the runner's environment.
   const sweep = (eventName: string) =>
     runSync({
       eventName,
-      payload: { repository: { full_name: "nsquared-team/some-repo" } },
+      payload:
+        eventName === "schedule"
+          ? { schedule: "17 * * * *" }
+          : { repository: { full_name: "nsquared-team/some-repo" } },
     });
+
+  beforeAll(() => {
+    process.env.GITHUB_REPOSITORY = "nsquared-team/some-repo";
+  });
+  afterAll(() => {
+    delete process.env.GITHUB_REPOSITORY;
+  });
 
   test("only linked PRs are restated, and one failing PR neither stops the rest nor hides", async () => {
     mockAsana();

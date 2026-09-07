@@ -16108,6 +16108,7 @@ const getAllPages = (url) => __awaiter(void 0, void 0, void 0, function* () {
 });
 exports.getAllPages = getAllPages;
 const moveTaskToSection = (taskId, moveSection, doNotMoveSections) => __awaiter(void 0, void 0, void 0, function* () {
+    var _b;
     const taskUrl = `${REQUESTS.TASKS_URL}${taskId}`;
     const taskResponse = yield asanaAxios_1.default.get(taskUrl);
     const task = taskResponse.data.data;
@@ -16118,6 +16119,10 @@ const moveTaskToSection = (taskId, moveSection, doNotMoveSections) => __awaiter(
         return;
     }
     for (const membership of task.memberships) {
+        // Asana inserts at the top of the section, so restating a task's
+        // section on every event would keep reshuffling the board.
+        if (((_b = membership.section) === null || _b === void 0 ? void 0 : _b.name) === moveSection)
+            continue;
         const projectId = membership.project.gid;
         const sectionsUrl = `${REQUESTS.PROJECTS_URL}${projectId}${REQUESTS.SECTIONS_URL}`;
         const sectionsResponse = yield asanaAxios_1.default.get(sectionsUrl);
@@ -16178,14 +16183,14 @@ const getApprovalSubtask = (taskId, isComplete, assignee) => __awaiter(void 0, v
 });
 exports.getApprovalSubtask = getApprovalSubtask;
 const deleteApprovalTasks = (approvalSubtasks) => __awaiter(void 0, void 0, void 0, function* () {
-    var _b;
+    var _c;
     for (const subtask of approvalSubtasks) {
         try {
             yield asanaAxios_1.default.delete(`${REQUESTS.TASKS_URL}${subtask.gid}`);
             (0, core_1.info)(`Deleted approval subtask ${subtask.gid}`);
         }
         catch (error) {
-            if (utils.isAxiosError(error) && ((_b = error.response) === null || _b === void 0 ? void 0 : _b.status) === 404) {
+            if (utils.isAxiosError(error) && ((_c = error.response) === null || _c === void 0 ? void 0 : _c.status) === 404) {
                 (0, core_1.info)(`Approval subtask ${subtask.gid} already deleted - skipping`);
                 continue;
             }
@@ -16645,7 +16650,8 @@ const buildEvent = (context) => {
     return {
         eventName: context.eventName,
         action: payload.action || "",
-        repoFullName: ((_g = payload.repository) === null || _g === void 0 ? void 0 : _g.full_name) || "",
+        // A schedule payload carries no repository; the runner's env does.
+        repoFullName: ((_g = payload.repository) === null || _g === void 0 ? void 0 : _g.full_name) || process.env.GITHUB_REPOSITORY || "",
         taskIds: utils.extractAsanaTaskIds(pullRequest === null || pullRequest === void 0 ? void 0 : pullRequest.body),
         prNumber: pullRequest === null || pullRequest === void 0 ? void 0 : pullRequest.number,
         // issue_comment also fires on plain issues, which have no PR to read.
@@ -17223,9 +17229,12 @@ const handlePullRequest = (event) => __awaiter(void 0, void 0, void 0, function*
         if (!event.eventReviewer)
             return;
         for (const taskId of event.taskIds) {
-            const subtask = yield asana.getApprovalSubtask(taskId, false, event.eventReviewer);
-            if (subtask)
-                yield asana.deleteApprovalTasks([subtask]);
+            const subtasks = yield asana.getAllApprovalSubtasks(taskId, asana.ottoUser());
+            yield asana.deleteApprovalTasks(subtasks.filter((subtask) => {
+                var _a;
+                return subtask.name === "Review" &&
+                    ((_a = subtask.assignee) === null || _a === void 0 ? void 0 : _a.gid) === event.eventReviewer.asanaId;
+            }));
         }
         return;
     }
@@ -17351,7 +17360,9 @@ const latestDefinitiveReviews = (reviews) => {
 // Latest definitive review per mapped reviewer. A dismissed approval has to
 // stay in the tally as "no longer approved" - dropping the reviewer entirely
 // would let their vacated slot read as satisfied. Anyone GitHub still lists
-// as requested is pending, unless their latest review already approved.
+// as requested is pending, unless their latest review already approved: the
+// approval keeps gating the tiers, but being asked again is recorded, and
+// the task is not done while GitHub still waits on a tier reviewer.
 //
 // An approval is needed only once: it stands until its reviewer changes
 // their own verdict or the review is dismissed. A later changes-request
@@ -17380,6 +17391,7 @@ const tallyReviews = (reviews, requestedReviewers) => {
                 info: reviewer,
             };
         }
+        latestReviews[reviewer.githubName].requested = true;
     }
     return latestReviews;
 };
@@ -17434,11 +17446,16 @@ const tierVerdict = (latestReviews) => {
             approvedByQa = false;
     }
     const hasTierApproval = Object.values(latestReviews).some((review) => review.state === "APPROVED" && utils.isReviewTier(review.info));
+    const awaitsTierReviewer = Object.values(latestReviews).some((review) => review.requested && utils.isReviewTier(review.info));
     return {
         approvedByPeer,
         approvedByDev,
         approvedByQa,
-        fullyApproved: hasTierApproval && approvedByPeer && approvedByDev && approvedByQa,
+        fullyApproved: hasTierApproval &&
+            approvedByPeer &&
+            approvedByDev &&
+            approvedByQa &&
+            !awaitsTierReviewer,
     };
 };
 // A PR is fully approved only when every tier has signed off; approvals
@@ -17604,8 +17621,10 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
     // else happens to approve later.
     yield resummonDismissedReviewers(githubUrl, latestReviews);
     const { fullyApproved } = tierVerdict(latestReviews);
+    // An approver asked again keeps their approval in the tally, but GitHub
+    // is waiting on them: their fresh Review subtask stays pending.
     const approvedAsanaIds = Object.values(latestReviews)
-        .filter((review) => review.state === "APPROVED")
+        .filter((review) => review.state === "APPROVED" && !review.requested)
         .map((review) => review.info.asanaId);
     const otto = asana.ottoUser();
     const leaveAlone = [

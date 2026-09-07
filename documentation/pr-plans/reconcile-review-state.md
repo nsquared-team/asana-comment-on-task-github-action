@@ -13,4 +13,5 @@ A reviewer looking at Asana sees what GitHub says: a pull request that is up for
 - [x] The same re-check promotes a task to Approved once every tier has approved, marks a pending Review subtask approved when its reviewer already approved on GitHub, and re-requests a dismissed reviewer without waiting for another approval.
 - [x] A reviewer taken off the pull request loses their pending Review subtask.
 - [x] A scheduled or manual run restates every open pull request that links a task, and one failing pull request neither stops the rest nor hides.
+- [x] Restating changes nothing a person would notice when Asana already matches: a task in its section stays in place, a reviewer asked to review again is waited on, and taking a reviewer off the pull request touches only the subtask the action created.
 - [x] The README state machine states the invariant.

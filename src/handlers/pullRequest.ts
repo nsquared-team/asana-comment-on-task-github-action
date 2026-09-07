@@ -93,12 +93,17 @@ export const handlePullRequest = async (event: SyncEvent) => {
   if (event.action === "review_request_removed") {
     if (!event.eventReviewer) return;
     for (const taskId of event.taskIds) {
-      const subtask = await asana.getApprovalSubtask(
+      const subtasks = await asana.getAllApprovalSubtasks(
         taskId,
-        false,
-        event.eventReviewer
+        asana.ottoUser()
       );
-      if (subtask) await asana.deleteApprovalTasks([subtask]);
+      await asana.deleteApprovalTasks(
+        subtasks.filter(
+          (subtask: any) =>
+            subtask.name === "Review" &&
+            subtask.assignee?.gid === event.eventReviewer.asanaId
+        )
+      );
     }
     return;
   }
