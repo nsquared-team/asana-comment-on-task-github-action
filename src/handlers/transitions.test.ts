@@ -1626,4 +1626,162 @@ describe("every event restates the review state", () => {
     );
     expect(githubGet).not.toHaveBeenCalled();
   });
+
+  const peerApproved = {
+    user: { login: PEER.githubName },
+    state: "APPROVED",
+    submitted_at: "2026-08-01T00:00:00Z",
+  };
+
+  // The cascade ignores an approval given while the PR is conflicting, and
+  // nothing re-ran the tally once the conflict was gone.
+  test("every tier approved with nobody pending moves the task to Approved", async () => {
+    mockAsana({ subtasks: [ciSubtask("approved")] });
+    mockGithub(readyPr({ requested_reviewers: [] }), [peerApproved]);
+    await reconcileReviewState(commentEvent);
+    expect(movesTo("Approved")).toHaveLength(1);
+    expect(movesTo("Testing / Review")).toHaveLength(0);
+  });
+
+  test("a pending Review subtask whose reviewer already approved on GitHub is marked approved", async () => {
+    mockAsana({
+      subtasks: [
+        {
+          gid: "rev-sub-1",
+          name: "Review",
+          resource_subtype: "approval",
+          completed: false,
+          created_by: { gid: OTTO_ASANA_ID },
+          assignee: { gid: PEER.asanaId },
+        },
+      ],
+    });
+    mockGithub(readyPr({ requested_reviewers: [] }), [peerApproved]);
+    await reconcileReviewState(commentEvent);
+    expect(asanaPut).toHaveBeenCalledWith("/tasks/rev-sub-1", {
+      data: { approval_status: "approved" },
+    });
+  });
+
+  test("a dismissed reviewer is re-requested by the re-check itself", async () => {
+    mockAsana();
+    mockGithub(readyPr({ requested_reviewers: [] }), [
+      { ...peerApproved, state: "DISMISSED" },
+    ]);
+    await reconcileReviewState(commentEvent);
+    expect(githubPost).toHaveBeenCalledWith(
+      "/repos/nsquared-team/some-repo/pulls/42/requested_reviewers",
+      { reviewers: [PEER.githubName] }
+    );
+    expect(movesTo("Approved")).toHaveLength(0);
+  });
+});
+
+describe("a reviewer taken off the pull request", () => {
+  const DEV = {
+    githubName: "NatalieMac",
+    asanaId: "1208102635655720",
+    team: "DEV",
+  };
+  const pending = (gid: string, assignee: string) => ({
+    gid,
+    name: "Review",
+    resource_subtype: "approval",
+    completed: false,
+    created_by: { gid: OTTO_ASANA_ID },
+    assignee: { gid: assignee },
+  });
+
+  test("loses only their own pending Review subtask", async () => {
+    mockAsana({
+      subtasks: [
+        pending("peer-sub", PEER.asanaId),
+        pending("dev-sub", DEV.asanaId),
+      ],
+    });
+    await handlePullRequest(
+      baseEvent({
+        action: "review_request_removed",
+        eventReviewer: PEER,
+        requestedReviewers: [DEV],
+      })
+    );
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/peer-sub");
+    expect(asanaDelete).not.toHaveBeenCalledWith("/tasks/dev-sub");
+  });
+
+  test("a team request removed carries no reviewer and deletes nothing", async () => {
+    mockAsana({ subtasks: [pending("peer-sub", PEER.asanaId)] });
+    await handlePullRequest(
+      baseEvent({ action: "review_request_removed", eventReviewer: undefined })
+    );
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+});
+
+describe("the sweep restates every open pull request", () => {
+  const openPr = (number: number, body: string) => ({
+    number,
+    body,
+    html_url: `https://github.com/nsquared-team/some-repo/pull/${number}`,
+  });
+  const ready = (requestedReviewers: any[] = [{ login: PEER.githubName }]) => ({
+    state: "open",
+    draft: false,
+    mergeable: true,
+    requested_reviewers: requestedReviewers,
+  });
+  const sweep = (eventName: string) =>
+    runSync({
+      eventName,
+      payload: { repository: { full_name: "nsquared-team/some-repo" } },
+    });
+
+  test("only linked PRs are restated, and one failing PR neither stops the rest nor hides", async () => {
+    mockAsana();
+    githubGet.mockImplementation((url: string) => {
+      if (url.includes("/pulls?state=open"))
+        return Promise.resolve({
+          data: [
+            openPr(43, "https://app.asana.com/0/123/222"),
+            openPr(44, "no task here"),
+            openPr(42, "https://app.asana.com/0/123/111"),
+          ],
+        });
+      if (url.endsWith("/pulls/43")) return Promise.reject(new Error("boom"));
+      if (url.endsWith("/reviews")) return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: ready() });
+    });
+    await sweep("schedule");
+    const pullReads = githubGet.mock.calls.filter(([url]: [string]) =>
+      /\/pulls\/\d+$/.test(url)
+    );
+    expect(pullReads.map(([url]: [string]) => url)).toEqual([
+      "/repos/nsquared-team/some-repo/pulls/43",
+      "/repos/nsquared-team/some-repo/pulls/42",
+    ]);
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(setFailed).toHaveBeenCalledWith(expect.stringContaining("#43"));
+  });
+
+  test("a manual run pages through every open PR", async () => {
+    mockAsana();
+    const unlinked = Array.from({ length: 100 }, (_, i) => openPr(100 + i, ""));
+    githubGet.mockImplementation((url: string) => {
+      if (url.includes("/pulls?state=open"))
+        return Promise.resolve({
+          data: url.endsWith("page=1")
+            ? unlinked
+            : [openPr(42, "https://app.asana.com/0/123/111")],
+        });
+      if (url.endsWith("/reviews")) return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: ready() });
+    });
+    await sweep("workflow_dispatch");
+    expect(setFailed).not.toHaveBeenCalled();
+    expect(githubGet).toHaveBeenCalledWith(
+      "/repos/nsquared-team/some-repo/pulls?state=open&per_page=100&page=2"
+    );
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+  });
 });

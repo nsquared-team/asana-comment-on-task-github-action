@@ -3,4 +3,6 @@ export const allowed = [
   "pull_request_review",
   "pull_request_review_comment",
   "issue_comment",
+  "schedule",
+  "workflow_dispatch",
 ];

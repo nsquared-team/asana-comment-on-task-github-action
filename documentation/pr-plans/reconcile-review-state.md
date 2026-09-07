@@ -10,4 +10,7 @@ A reviewer looking at Asana sees what GitHub says: a pull request that is up for
 - [x] Resolving a merge conflict restores the Review subtasks the conflict alert cleared, on the next event that reaches the action.
 - [x] The reconcile never acts on a draft, a closed pull request, a conflicting one, unknown mergeability, a red CI verdict or a standing changes-request, and never pulls a task out of Blocked or a released column.
 - [x] Each of those bounds is covered by a test that goes red when it is removed, and the conflict-resolved path is proven through the action entry point.
+- [x] The same re-check promotes a task to Approved once every tier has approved, marks a pending Review subtask approved when its reviewer already approved on GitHub, and re-requests a dismissed reviewer without waiting for another approval.
+- [x] A reviewer taken off the pull request loses their pending Review subtask.
+- [x] A scheduled or manual run restates every open pull request that links a task, and one failing pull request neither stops the rest nor hides.
 - [x] The README state machine states the invariant.

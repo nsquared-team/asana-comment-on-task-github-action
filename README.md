@@ -41,13 +41,21 @@ stateDiagram-v2
 | Review: dismissed | → Testing / Review | A dismissed approval un-approves the PR, so the task cannot sit in Approved on a sign-off that no longer exists. Tasks in In Progress or Released sections stay put. |
 | Merged | → release section | `aaardvark-app` / `blinkmetrics-app`: `master` → *Released in Alpha*, `beta` → *Released in Beta*, `production` → *Released*. Every other repo: *Done*. A merge into any other branch of a staged-release repo — a stacked PR — ships nothing and moves nothing. Tasks are **never auto-completed**, and a merge **never deletes approval subtasks** — they are the record of who signed off (and who never answered), and an approval given just before an auto-merge may not have reached its subtask yet. Instead, a still-open "Review" subtask is renamed **"FYI Review"**: nobody is waiting on it now the code is in, but the reviewer can still read it. A subtask that already carries a prefix ("FYI Review", or any other "… Review") and one that has been answered are both left alone, so a repeated merge event changes nothing. A stacked merge relabels too — it ships nothing, but its reviews are just as finished. |
 | Closed without merging | → In Progress | Pending "Review" subtasks are deleted; the task goes back to its author. Tasks in Blocked or Released sections stay put. |
+| Review request removed | *(no move)* | That reviewer's pending "Review" subtask is deleted; the re-check below decides who is active now. |
 | Merge-conflict comment from otto | → Next | Task reopened; pending "Review" subtasks are deleted (the CI subtask survives). While the conflict stands the task cannot be promoted: see the approval row. Once it is resolved, the next event that reaches the action — otto's resolved comment, the green CI run, any review or comment — restores the subtasks and returns the task to Testing / Review (see the re-check below). |
 
 ### Every event re-checks the review state
 
-The rows above each mirror one transition. After any of them runs, the action reads the PR fresh from GitHub and restates the whole review state: if the PR is open, ready for review, mergeable, its last CI verdict is not a rejection, and no changes-request stands whose reviewer has not been re-requested, then every reviewer of the active tier GitHub is still waiting on gets a pending "Review" subtask and the task moves to Testing / Review. That is what makes Asana converge on the PR whatever order events arrive in — a conflict resolved, a webhook that never fired, two runs that overlapped.
+The rows above each mirror one transition. After any of them runs, the action reads the PR fresh from GitHub and restates the whole review state. If the PR is open, ready for review, mergeable, its last CI verdict is not a rejection, and no changes-request stands whose reviewer has not been re-requested, then:
 
-The re-check respects Blocked and the released columns, does nothing while GitHub has not computed mergeability yet, and skips CI-rejection and description-edit runs (the first has just parked the task on purpose, the second never touches Asana).
+- every reviewer of the active tier GitHub is still waiting on gets a pending "Review" subtask and the task moves to Testing / Review;
+- once every tier has approved, the task moves to Approved instead — including an approval given while the PR was conflicting, which counts as soon as the conflict is gone;
+- a pending "Review" subtask whose reviewer already approved on GitHub is marked approved (a review that landed while its subtask was still being created);
+- a reviewer whose approval was dismissed is re-requested on GitHub right away, not only when someone else approves later.
+
+That is what makes Asana converge on the PR whatever order events arrive in — a conflict resolved, a webhook that never fired, two runs that overlapped. The re-check respects Blocked and the released columns, does nothing while GitHub has not computed mergeability yet, and skips CI-rejection and description-edit runs (the first has just parked the task on purpose, the second never touches Asana).
+
+The same re-check runs as a **sweep** on a `schedule` or `workflow_dispatch` trigger: every open PR in the repo that links a task is restated in turn. One PR failing does not stop the rest; the run still ends red so the failure is visible. It is the safety net for a webhook that never fired at all.
 
 Section names are matched per board; boards using "Blocked / Waiting" instead of "Blocked" (and similar variants) are both supported. A task in several projects is only moved when *none* of its sections is a protected one — a task parked in Blocked on one board is not quietly moved on another.
 
@@ -57,6 +65,7 @@ The same action runs in two modes, switched by `comment-text`:
 
 1. **PR-activity sync** (any other `comment-text`, used by the fleet-wide `asana.yaml`): mirrors comments/reviews to Asana, adds followers, moves sections, manages review subtasks.
 2. **CI-status sync** (`comment-text: approved | rejected | edit_pr_description`, used by the repos' CI pipelines): records the CI verdict on the "Automated CI Testing" subtask and moves the task; `edit_pr_description` instead injects the CI sandbox block into the PR description. CI-status runs never post PR comments.
+3. **Sweep** (`schedule` / `workflow_dispatch` trigger, no `comment-text`): restates every open PR that links a task — see *Every event re-checks the review state*.
 
 ## Inputs
 
@@ -69,8 +78,9 @@ The same action runs in two modes, switched by `comment-text`:
 | `pr-description` | `edit_pr_description` mode | Sandbox block content. |
 | `asana-secret` | no | Legacy, unused; kept so existing workflows don't warn. |
 
-Supported triggers: `pull_request`, `pull_request_review`, `pull_request_review_comment`, `issue_comment`. Two subscriptions the calling workflow has to get right:
+Supported triggers: `pull_request`, `pull_request_review`, `pull_request_review_comment`, `issue_comment`, plus `schedule` and `workflow_dispatch` for the sweep. Three subscriptions the calling workflow has to get right:
 
+- **`review_request_removed`** on `pull_request` — without it a reviewer taken off the PR keeps a pending approval in Asana forever.
 - **`converted_to_draft`** on `pull_request` — without it the draft rule never fires.
 - **`dismissed`** on `pull_request_review` — without it a dismissed approval leaves the task in Approved.
 

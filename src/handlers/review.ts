@@ -24,6 +24,101 @@ const latestDefinitiveReviews = (reviews: any[]) => {
   return latest;
 };
 
+// Latest definitive review per mapped reviewer. A dismissed approval has to
+// stay in the tally as "no longer approved" - dropping the reviewer entirely
+// would let their vacated slot read as satisfied. Anyone GitHub still lists
+// as requested is pending, unless their latest review already approved.
+//
+// An approval is needed only once: it stands until its reviewer changes
+// their own verdict or the review is dismissed. A later changes-request
+// from someone else (otto's included) deliberately does NOT invalidate
+// it - that mirrors GitHub's own semantics, where invalidating on revision
+// is an explicit dismissal, never a side effect of another review.
+const tallyReviews = (reviews: any[], requestedReviewers: any[]) => {
+  const latestReviews: { [githubName: string]: any } = {};
+  const latestDefinitive = latestDefinitiveReviews(reviews);
+  for (const githubName of Object.keys(latestDefinitive)) {
+    const reviewerObj = utils.findUserByGithubName(githubName);
+    if (!reviewerObj) continue;
+    latestReviews[githubName] = {
+      state: latestDefinitive[githubName].state,
+      timestamp: latestDefinitive[githubName].submitted_at,
+      info: reviewerObj,
+    };
+  }
+  for (const reviewer of requestedReviewers) {
+    const existing = latestReviews[reviewer.githubName];
+    if (!existing || existing.state !== "APPROVED") {
+      latestReviews[reviewer.githubName] = {
+        state: "PENDING",
+        timestamp: null,
+        info: reviewer,
+      };
+    }
+  }
+  return latestReviews;
+};
+
+// A dismissed approval blocks its tier, but nothing summons its reviewer
+// back: they are no longer in requested_reviewers and their old subtask is
+// answered - so nobody re-requests them by hand and the cascade deadlocks
+// silently. Re-requesting their review here fires review_requested, whose
+// handler re-creates the "Review" subtask once their tier is active - the
+// same single path every other summons takes. A standing changes-request
+// is deliberately not resummoned: the author answers it and re-requests.
+// (The tally already replaced anyone still requested with PENDING, so this
+// only reaches reviewers nobody has re-requested.)
+const resummonDismissedReviewers = async (
+  githubUrl: string,
+  latestReviews: { [githubName: string]: any }
+) => {
+  for (const githubName of Object.keys(latestReviews)) {
+    const review = latestReviews[githubName];
+    if (review.state !== "DISMISSED") continue;
+    if (!utils.isReviewTier(review.info)) continue;
+    try {
+      await githubAxios.post(`${githubUrl}${REQUESTS.REVIEWERS_URL}`, {
+        reviewers: [githubName],
+      });
+    } catch (error) {
+      // One unreachable reviewer must not stall the tally or the sync.
+      console.warn(`Failed to re-request a review from ${githubName}:`, error);
+    }
+  }
+};
+
+// Only the three human tiers gate the cascade. Bots review every PR here,
+// and bucketing them into whichever tier the fallback happened to land on
+// made their verdict silently block a tier they never sat in.
+// With no reviews at all every tier flag stays true by default, so the
+// promotion needs positive evidence: an approval from someone who actually
+// sits in a review tier. A bot's or an unmapped user's approval is not a
+// human sign-off and can never promote on its own.
+const tierVerdict = (latestReviews: { [githubName: string]: any }) => {
+  let approvedByPeer = true;
+  let approvedByDev = true;
+  let approvedByQa = true;
+  for (const githubName of Object.keys(latestReviews)) {
+    const review = latestReviews[githubName];
+    if (review.state === "APPROVED") continue;
+    const team = review.info.team;
+    if (team === "PEER_DEV") approvedByPeer = false;
+    else if (team === "DEV") approvedByDev = false;
+    else if (team === "QA") approvedByQa = false;
+  }
+  const hasTierApproval = Object.values(latestReviews).some(
+    (review: any) =>
+      review.state === "APPROVED" && utils.isReviewTier(review.info)
+  );
+  return {
+    approvedByPeer,
+    approvedByDev,
+    approvedByQa,
+    fullyApproved:
+      hasTierApproval && approvedByPeer && approvedByDev && approvedByQa,
+  };
+};
+
 // A PR is fully approved only when every tier has signed off; approvals
 // cascade PEER_DEV -> DEV -> QA, creating the next tier's subtasks as the
 // previous tier completes.
@@ -43,79 +138,13 @@ const handleApprovalCascade = async (event: SyncEvent) => {
   const reviewsResponse = await githubAxios.get(
     `${githubUrl}${REQUESTS.REVIEWS_URL}`
   );
-  const reviews = reviewsResponse.data;
-
-  // Latest definitive review per reviewer. A dismissed approval has to stay
-  // in the tally as "no longer approved" - dropping the reviewer entirely
-  // would let their vacated slot read as satisfied.
-  //
-  // An approval is needed only once: it stands until its reviewer changes
-  // their own verdict or the review is dismissed. A later changes-request
-  // from someone else (otto's included) deliberately does NOT invalidate
-  // it - that mirrors GitHub's own semantics, where invalidating on revision
-  // is an explicit dismissal, never a side effect of another review.
-  const latestReviews: { [githubName: string]: any } = {};
-  const latestDefinitive = latestDefinitiveReviews(reviews);
-  for (const githubName of Object.keys(latestDefinitive)) {
-    const reviewerObj = utils.findUserByGithubName(githubName);
-    if (!reviewerObj) continue;
-    latestReviews[githubName] = {
-      state: latestDefinitive[githubName].state,
-      timestamp: latestDefinitive[githubName].submitted_at,
-      info: reviewerObj,
-    };
-  }
-
-  // A reviewer still in requested_reviewers has a re-requested (pending)
-  // review, unless their latest review already approved.
-  for (const reviewer of event.requestedReviewers) {
-    const existing = latestReviews[reviewer.githubName];
-    if (!existing || existing.state !== "APPROVED") {
-      latestReviews[reviewer.githubName] = {
-        state: "PENDING",
-        timestamp: null,
-        info: reviewer,
-      };
-    }
-  }
-
-  // A dismissed approval blocks its tier, but nothing summons its reviewer
-  // back: they are no longer in requested_reviewers and their old subtask is
-  // answered - so nobody re-requests them by hand and the cascade deadlocks
-  // silently. Re-requesting their review here fires review_requested, whose
-  // handler re-creates the "Review" subtask once their tier is active - the
-  // same single path every other summons takes. A standing changes-request
-  // is deliberately not resummoned: the author answers it and re-requests.
-  // (The requested_reviewers pass above already replaced anyone pending
-  // with PENDING, so this only reaches reviewers nobody has re-requested.)
-  for (const githubName of Object.keys(latestReviews)) {
-    const review = latestReviews[githubName];
-    if (review.state !== "DISMISSED") continue;
-    if (!utils.isReviewTier(review.info)) continue;
-    try {
-      await githubAxios.post(`${githubUrl}${REQUESTS.REVIEWERS_URL}`, {
-        reviewers: [githubName],
-      });
-    } catch (error) {
-      // One unreachable reviewer must not stall the tally or the sync.
-      console.warn(`Failed to re-request a review from ${githubName}:`, error);
-    }
-  }
-
-  let approvedByPeer = true;
-  let approvedByDev = true;
-  let approvedByQa = true;
-  for (const githubName of Object.keys(latestReviews)) {
-    const review = latestReviews[githubName];
-    if (review.state === "APPROVED") continue;
-    // Only the three human tiers gate the cascade. Bots review every PR
-    // here, and bucketing them into whichever tier the fallback happened to
-    // land on made their verdict silently block a tier they never sat in.
-    const team = review.info.team;
-    if (team === "PEER_DEV") approvedByPeer = false;
-    else if (team === "DEV") approvedByDev = false;
-    else if (team === "QA") approvedByQa = false;
-  }
+  const latestReviews = tallyReviews(
+    reviewsResponse.data,
+    event.requestedReviewers
+  );
+  await resummonDismissedReviewers(githubUrl, latestReviews);
+  const { approvedByPeer, approvedByDev, approvedByQa, fullyApproved } =
+    tierVerdict(latestReviews);
 
   const devReviewers = event.requestedReviewers.filter(
     (reviewer: any) => reviewer.team === "DEV"
@@ -144,16 +173,7 @@ const handleApprovalCascade = async (event: SyncEvent) => {
     }
   }
 
-  // With no reviews at all every tier flag stays true by default, so the
-  // promotion needs positive evidence: an approval from someone who actually
-  // sits in a review tier. A bot's or an unmapped user's approval is not a
-  // human sign-off and can never promote on its own.
-  const hasTierApproval = Object.values(latestReviews).some(
-    (review: any) =>
-      review.state === "APPROVED" && utils.isReviewTier(review.info)
-  );
-
-  if (hasTierApproval && approvedByPeer && approvedByDev && approvedByQa) {
+  if (fullyApproved) {
     for (const taskId of event.taskIds) {
       await asana.moveTaskToSection(taskId, SECTIONS.APPROVED);
     }
@@ -264,11 +284,12 @@ export const handleReview = async (event: SyncEvent) => {
 // restates the invariant they all approximate: a pull request that is open,
 // ready, mergeable, green and under no standing changes-request is in
 // review, so each active-tier reviewer GitHub is still waiting on holds a
-// pending Review subtask and the task sits in Testing / Review. It is what
-// puts the approvals back once a conflict is resolved, and what repairs a
-// transition that a missed or overlapping event left half-done. It reads
-// the PR fresh rather than trusting the payload: a parallel run may have
-// moved the PR on since the webhook fired.
+// pending Review subtask and the task sits in Testing / Review - or in
+// Approved once every tier has signed off. It is what puts the approvals
+// back once a conflict is resolved, and what repairs a transition that a
+// missed or overlapping event left half-done. It reads the PR fresh rather
+// than trusting the payload: a parallel run may have moved the PR on since
+// the webhook fired.
 export const reconcileReviewState = async (event: SyncEvent) => {
   if (!event.taskIds.length || !event.isPullRequest) return;
 
@@ -283,10 +304,10 @@ export const reconcileReviewState = async (event: SyncEvent) => {
   const requestedLogins: string[] = (pullRequest.requested_reviewers || []).map(
     (reviewer: any) => reviewer.login
   );
-  const activeTier = utils.pickReviewerTier(
-    requestedLogins.map(utils.findUserByGithubName)
-  );
-  if (!activeTier.length) return;
+  const requestedReviewers = requestedLogins
+    .map(utils.findUserByGithubName)
+    .filter(Boolean);
+  const activeTier = utils.pickReviewerTier(requestedReviewers);
 
   // A changes-request parks the task until the author re-requests that
   // reviewer - whoever made it, since the review handler parks on any.
@@ -300,16 +321,84 @@ export const reconcileReviewState = async (event: SyncEvent) => {
   );
   if (changesRequestStands) return;
 
+  const latestReviews = tallyReviews(reviews, requestedReviewers);
+  // Summoned back the moment the dismissal syncs, not only when someone
+  // else happens to approve later.
+  await resummonDismissedReviewers(githubUrl, latestReviews);
+  const { fullyApproved } = tierVerdict(latestReviews);
+  const approvedAsanaIds = Object.values(latestReviews)
+    .filter((review: any) => review.state === "APPROVED")
+    .map((review: any) => review.info.asanaId);
+
   const otto = asana.ottoUser();
+  const leaveAlone = [
+    ...SECTIONS.BLOCKED_SECTIONS,
+    ...SECTIONS.RELEASED_SECTIONS,
+  ];
   for (const taskId of event.taskIds) {
     const ciSubtask = await asana.getApprovalSubtask(taskId, true, otto);
     if (ciSubtask?.approval_status === "rejected") continue;
-    await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, [
-      ...SECTIONS.BLOCKED_SECTIONS,
-      ...SECTIONS.RELEASED_SECTIONS,
-    ]);
+
+    // A review whose run overlapped the run creating its subtask mirrored
+    // its verdict onto nothing, leaving a pending approval nobody will
+    // answer. GitHub's verdict wins.
+    for (const subtask of await asana.getAllApprovalSubtasks(taskId, otto)) {
+      if (
+        subtask.name === "Review" &&
+        approvedAsanaIds.includes(subtask.assignee?.gid)
+      ) {
+        await asana.updateApprovalSubtask(subtask.gid, {
+          approval_status: "approved",
+        });
+      }
+    }
+
+    if (fullyApproved) {
+      await asana.moveTaskToSection(taskId, SECTIONS.APPROVED, leaveAlone);
+      continue;
+    }
+    if (!activeTier.length) continue;
+    await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, leaveAlone);
     for (const reviewer of activeTier) {
       await asana.addRequestedReview(taskId, reviewer, event.prUrl);
     }
+  }
+};
+
+// No event to mirror: walk every open pull request that links a task and
+// restate each one - the safety net for a webhook that never fired or a run
+// that died half-way. One pull request failing does not stop the rest; the
+// run still ends red so the failure is visible.
+export const reconcileOpenPullRequests = async (event: SyncEvent) => {
+  const failed: number[] = [];
+  for (let page = 1; ; page++) {
+    const pullRequests = (
+      await githubAxios.get(
+        `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.OPEN_PULLS_URL}&page=${page}`
+      )
+    ).data;
+    for (const pullRequest of pullRequests) {
+      const taskIds = utils.extractAsanaTaskIds(pullRequest.body);
+      if (!taskIds.length) continue;
+      try {
+        await reconcileReviewState({
+          ...event,
+          taskIds,
+          prNumber: pullRequest.number,
+          prUrl: pullRequest.html_url,
+          isPullRequest: true,
+        });
+      } catch (error) {
+        console.warn(
+          `Failed to reconcile pull request #${pullRequest.number}:`,
+          error
+        );
+        failed.push(pullRequest.number);
+      }
+    }
+    if (pullRequests.length < REQUESTS.PULLS_PAGE_SIZE) break;
+  }
+  if (failed.length) {
+    throw new Error(`Failed to reconcile pull requests #${failed.join(", #")}`);
   }
 };
