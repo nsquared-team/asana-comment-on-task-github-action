@@ -11,25 +11,61 @@ const SUBTASK_REVIEW_STATES = ["approved", "pending", "changes_requested"];
 
 const DEFINITIVE_REVIEW_STATES = ["CHANGES_REQUESTED", "APPROVED", "DISMISSED"];
 
+const pullRequestUrl = (event: SyncEvent) =>
+  `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
+
 // A "Comment" review from a tier reviewer is a rejection here: they looked
 // and did not approve, so the author answers it and re-requests them, exactly
-// as for changes requested. A standalone reply to a thread also arrives as a
-// commented review, but with no summary body - that one is only a comment.
-const verdictOf = (state: string, body: string | undefined, user: any) =>
-  state === "COMMENTED" && body?.trim() && utils.isReviewTier(user)
+// as for changes requested. GitHub files every inline comment as a review of
+// its own, a lone reply in an existing thread included, so a comment review
+// with no summary counts only when it opened a thread. The author annotating
+// their own diff is never a verdict.
+const isTierComment = (review: any, author: string) =>
+  review.state === "COMMENTED" &&
+  review.user.login !== author &&
+  utils.isReviewTier(utils.findUserByGithubName(review.user.login));
+
+const verdictOf = (review: any, author: string, threadOpeners: Set<number>) =>
+  isTierComment(review, author) &&
+  (review.body?.trim() || threadOpeners.has(review.id))
     ? "CHANGES_REQUESTED"
-    : state;
+    : review.state;
+
+// The reviews that opened a thread, read only when a verdict depends on it:
+// a tier reviewer's comment review with no summary.
+const findThreadOpeners = async (
+  githubUrl: string,
+  reviews: any[],
+  author: string
+) => {
+  const openers = new Set<number>();
+  const needed = reviews.some(
+    (review) => isTierComment(review, author) && !review.body?.trim()
+  );
+  if (!needed) return openers;
+  for (let page = 1; ; page++) {
+    const comments = (
+      await githubAxios.get(
+        `${githubUrl}${REQUESTS.REVIEW_COMMENTS_URL}&page=${page}`
+      )
+    ).data;
+    for (const comment of comments) {
+      if (!comment.in_reply_to_id) openers.add(comment.pull_request_review_id);
+    }
+    if (comments.length < REQUESTS.REVIEW_COMMENTS_PAGE_SIZE) return openers;
+  }
+};
 
 // Latest definitive review per GitHub login, mapped in the user table or not.
-const latestDefinitiveReviews = (reviews: any[]) => {
+const latestDefinitiveReviews = (
+  reviews: any[],
+  author: string,
+  threadOpeners: Set<number>
+) => {
   const latest: { [login: string]: any } = {};
   for (const review of reviews) {
     const login = review.user.login;
-    const state = verdictOf(
-      review.state,
-      review.body,
-      utils.findUserByGithubName(login)
-    );
+    const state = verdictOf(review, author, threadOpeners);
     if (!DEFINITIVE_REVIEW_STATES.includes(state)) continue;
     if (!latest[login] || latest[login].submitted_at < review.submitted_at) {
       latest[login] = { ...review, state };
@@ -50,9 +86,18 @@ const latestDefinitiveReviews = (reviews: any[]) => {
 // from someone else (otto's included) deliberately does NOT invalidate
 // it - that mirrors GitHub's own semantics, where invalidating on revision
 // is an explicit dismissal, never a side effect of another review.
-const tallyReviews = (reviews: any[], requestedReviewers: any[]) => {
+const tallyReviews = (
+  reviews: any[],
+  requestedReviewers: any[],
+  author: string,
+  threadOpeners: Set<number>
+) => {
   const latestReviews: { [githubName: string]: any } = {};
-  const latestDefinitive = latestDefinitiveReviews(reviews);
+  const latestDefinitive = latestDefinitiveReviews(
+    reviews,
+    author,
+    threadOpeners
+  );
   for (const githubName of Object.keys(latestDefinitive)) {
     const reviewerObj = utils.findUserByGithubName(githubName);
     if (!reviewerObj) continue;
@@ -147,7 +192,7 @@ const tierVerdict = (latestReviews: { [githubName: string]: any }) => {
 // cascade PEER_DEV -> DEV -> QA, creating the next tier's subtasks as the
 // previous tier completes.
 const handleApprovalCascade = async (event: SyncEvent) => {
-  const githubUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
+  const githubUrl = pullRequestUrl(event);
 
   // A conflicting PR has a diff nobody has reviewed yet - resolving the
   // conflict writes it. So while the conflict stands the cascade neither
@@ -159,12 +204,15 @@ const handleApprovalCascade = async (event: SyncEvent) => {
   const pullRequestResponse = await githubAxios.get(githubUrl);
   if (pullRequestResponse.data.mergeable === false) return [];
 
-  const reviewsResponse = await githubAxios.get(
-    `${githubUrl}${REQUESTS.REVIEWS_URL}`
-  );
+  const author = pullRequestResponse.data.user?.login;
+  const reviews = (await githubAxios.get(`${githubUrl}${REQUESTS.REVIEWS_URL}`))
+    .data;
+  const threadOpeners = await findThreadOpeners(githubUrl, reviews, author);
   const latestReviews = tallyReviews(
-    reviewsResponse.data,
-    event.requestedReviewers
+    reviews,
+    event.requestedReviewers,
+    author,
+    threadOpeners
   );
   await resummonDismissedReviewers(githubUrl, latestReviews);
   const { approvedByPeer, approvedByDev, approvedByQa, fullyApproved } =
@@ -208,10 +256,21 @@ const handleApprovalCascade = async (event: SyncEvent) => {
 
 export const handleReview = async (event: SyncEvent) => {
   const reviewer = utils.findUserByGithubName(event.username);
+  const review = {
+    id: event.reviewId,
+    state: event.reviewState.toUpperCase(),
+    body: event.reviewBody,
+    user: { login: event.username },
+  };
+  const threadOpeners = await findThreadOpeners(
+    pullRequestUrl(event),
+    [review],
+    event.prAuthor
+  );
   const verdict = verdictOf(
-    event.reviewState.toUpperCase(),
-    event.reviewBody,
-    reviewer
+    review,
+    event.prAuthor,
+    threadOpeners
   ).toLowerCase();
 
   // Mirror the reviewer's verdict onto their approval subtask.
@@ -316,7 +375,7 @@ export const handleReview = async (event: SyncEvent) => {
 export const reconcileReviewState = async (event: SyncEvent) => {
   if (!event.taskIds.length || !event.isPullRequest) return;
 
-  const githubUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
+  const githubUrl = pullRequestUrl(event);
   const pullRequest = (await githubAxios.get(githubUrl)).data;
   if (pullRequest.state !== "open" || pullRequest.draft) return;
   // Unknown mergeability is not evidence here. The cascade reads it as
@@ -336,7 +395,9 @@ export const reconcileReviewState = async (event: SyncEvent) => {
   // reviewer - whoever made it, since the review handler parks on any.
   const reviews = (await githubAxios.get(`${githubUrl}${REQUESTS.REVIEWS_URL}`))
     .data;
-  const latest = latestDefinitiveReviews(reviews);
+  const author = pullRequest.user?.login;
+  const threadOpeners = await findThreadOpeners(githubUrl, reviews, author);
+  const latest = latestDefinitiveReviews(reviews, author, threadOpeners);
   const changesRequestStands = Object.keys(latest).some(
     (login) =>
       latest[login].state === "CHANGES_REQUESTED" &&
@@ -344,7 +405,12 @@ export const reconcileReviewState = async (event: SyncEvent) => {
   );
   if (changesRequestStands) return;
 
-  const latestReviews = tallyReviews(reviews, requestedReviewers);
+  const latestReviews = tallyReviews(
+    reviews,
+    requestedReviewers,
+    author,
+    threadOpeners
+  );
   // Summoned back the moment the dismissal syncs, not only when someone
   // else happens to approve later.
   await resummonDismissedReviewers(githubUrl, latestReviews);
@@ -359,8 +425,11 @@ export const reconcileReviewState = async (event: SyncEvent) => {
   const leaveAlone = [
     ...SECTIONS.BLOCKED_SECTIONS,
     ...SECTIONS.RELEASED_SECTIONS,
+    SECTIONS.DONE,
   ];
   for (const taskId of event.taskIds) {
+    // A task a person closed is finished, whatever its pull request says.
+    if ((await asana.getTask(taskId)).completed) continue;
     const ciSubtask = await asana.getApprovalSubtask(taskId, true, otto);
     if (ciSubtask?.approval_status === "rejected") continue;
 
@@ -387,43 +456,5 @@ export const reconcileReviewState = async (event: SyncEvent) => {
     for (const reviewer of activeTier) {
       await asana.addRequestedReview(taskId, reviewer, event.prUrl);
     }
-  }
-};
-
-// No event to mirror: walk every open pull request that links a task and
-// restate each one - the safety net for a webhook that never fired or a run
-// that died half-way. One pull request failing does not stop the rest; the
-// run still ends red so the failure is visible.
-export const reconcileOpenPullRequests = async (event: SyncEvent) => {
-  const failed: number[] = [];
-  for (let page = 1; ; page++) {
-    const pullRequests = (
-      await githubAxios.get(
-        `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.OPEN_PULLS_URL}&page=${page}`
-      )
-    ).data;
-    for (const pullRequest of pullRequests) {
-      const taskIds = utils.extractAsanaTaskIds(pullRequest.body);
-      if (!taskIds.length) continue;
-      try {
-        await reconcileReviewState({
-          ...event,
-          taskIds,
-          prNumber: pullRequest.number,
-          prUrl: pullRequest.html_url,
-          isPullRequest: true,
-        });
-      } catch (error) {
-        console.warn(
-          `Failed to reconcile pull request #${pullRequest.number}:`,
-          error
-        );
-        failed.push(pullRequest.number);
-      }
-    }
-    if (pullRequests.length < REQUESTS.PULLS_PAGE_SIZE) break;
-  }
-  if (failed.length) {
-    throw new Error(`Failed to reconcile pull requests #${failed.join(", #")}`);
   }
 };

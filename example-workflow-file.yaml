@@ -22,11 +22,6 @@ on:
     types: [created, edited, deleted]
   pull_request_review_comment:
     types: [created, edited, deleted]
-  # The sweep: restates every open PR that links a task, catching whatever a
-  # missed webhook or a run that died half-way left behind.
-  schedule:
-    - cron: "17 * * * *"
-  workflow_dispatch:
 
 jobs:
   sync-asana:

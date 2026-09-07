@@ -24,6 +24,9 @@ export const getAllPages = async (url: string) => {
   return results;
 };
 
+export const getTask = async (taskId: string) =>
+  (await asanaAxios.get(`${REQUESTS.TASKS_URL}${taskId}`)).data.data;
+
 export const moveTaskToSection = async (
   taskId: string,
   moveSection: string,

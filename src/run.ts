@@ -3,11 +3,7 @@ import * as utils from "./utils";
 import { buildEvent } from "./event";
 import { handleCiStatus } from "./handlers/ci";
 import { handlePullRequest } from "./handlers/pullRequest";
-import {
-  handleReview,
-  reconcileOpenPullRequests,
-  reconcileReviewState,
-} from "./handlers/review";
+import { handleReview, reconcileReviewState } from "./handlers/review";
 import { handleComment } from "./handlers/comment";
 
 export const run = async (context: any) => {
@@ -21,16 +17,6 @@ export const run = async (context: any) => {
     // CI-status invocations (comment-text: approved / rejected /
     // edit_pr_description) come from the consumer repos' CI pipelines and
     // only sync the CI verdict — they never post PR comments.
-    // A scheduled or manual run has no event to mirror; it restates every
-    // open pull request instead.
-    if (
-      event.eventName === "schedule" ||
-      event.eventName === "workflow_dispatch"
-    ) {
-      await reconcileOpenPullRequests(event);
-      return;
-    }
-
     if (event.eventName === "pull_request" && event.ciStatus) {
       await handleCiStatus(event);
     } else {

@@ -16082,7 +16082,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.updateApprovalSubtask = exports.addRequestedReview = exports.addApprovalTask = exports.cleanupApprovalTasks = exports.relabelReviewSubtasksAsFyi = exports.deleteReviewSubtasks = exports.deleteApprovalTasks = exports.getApprovalSubtask = exports.getAllApprovalSubtasks = exports.getStories = exports.addFollowers = exports.setTaskIncomplete = exports.moveTaskToSection = exports.getAllPages = exports.ottoUser = void 0;
+exports.updateApprovalSubtask = exports.addRequestedReview = exports.addApprovalTask = exports.cleanupApprovalTasks = exports.relabelReviewSubtasksAsFyi = exports.deleteReviewSubtasks = exports.deleteApprovalTasks = exports.getApprovalSubtask = exports.getAllApprovalSubtasks = exports.getStories = exports.addFollowers = exports.setTaskIncomplete = exports.moveTaskToSection = exports.getTask = exports.getAllPages = exports.ottoUser = void 0;
 const core_1 = __nccwpck_require__(7484);
 const asanaAxios_1 = __importDefault(__nccwpck_require__(5940));
 const REQUESTS = __importStar(__nccwpck_require__(4291));
@@ -16107,6 +16107,8 @@ const getAllPages = (url) => __awaiter(void 0, void 0, void 0, function* () {
     return results;
 });
 exports.getAllPages = getAllPages;
+const getTask = (taskId) => __awaiter(void 0, void 0, void 0, function* () { return (yield asanaAxios_1.default.get(`${REQUESTS.TASKS_URL}${taskId}`)).data.data; });
+exports.getTask = getTask;
 const moveTaskToSection = (taskId, moveSection, doNotMoveSections) => __awaiter(void 0, void 0, void 0, function* () {
     var _b;
     const taskUrl = `${REQUESTS.TASKS_URL}${taskId}`;
@@ -16314,7 +16316,7 @@ exports.updateApprovalSubtask = updateApprovalSubtask;
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.WRONG_TRIGGER = void 0;
-exports.WRONG_TRIGGER = "Only pull_request, pull_request_review, pull_request_review_comment, issue_comment, schedule and workflow_dispatch triggers are supported";
+exports.WRONG_TRIGGER = "Only pull_request, pull_request_review, pull_request_review_comment, and issue_comment triggers are supported";
 
 
 /***/ }),
@@ -16342,7 +16344,7 @@ exports.PR_DESCRIPTION = "pr-description";
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.REVIEWERS_URL = exports.REVIEWS_URL = exports.OPEN_PULLS_URL = exports.PULLS_PAGE_SIZE = exports.PULLS_URL = exports.REPOS_URL = exports.BASE_GITHUB_URL = exports.ADD_TASK_URL = exports.ADD_FOLLOWERS_URL = exports.STORIES_LIST_PARAMS = exports.SUBTASKS_URL = exports.STORIES_URL = exports.SECTIONS_URL = exports.TASKS_URL = exports.PROJECTS_URL = exports.BASE_ASANA_URL = exports.IDEMPOTENT_METHODS = exports.MAX_RETRY_DELAY = exports.RETRY_DELAY = exports.RETRIES = void 0;
+exports.REVIEWERS_URL = exports.REVIEW_COMMENTS_URL = exports.REVIEW_COMMENTS_PAGE_SIZE = exports.REVIEWS_URL = exports.PULLS_URL = exports.REPOS_URL = exports.BASE_GITHUB_URL = exports.ADD_TASK_URL = exports.ADD_FOLLOWERS_URL = exports.STORIES_LIST_PARAMS = exports.SUBTASKS_URL = exports.STORIES_URL = exports.SECTIONS_URL = exports.TASKS_URL = exports.PROJECTS_URL = exports.BASE_ASANA_URL = exports.IDEMPOTENT_METHODS = exports.MAX_RETRY_DELAY = exports.RETRY_DELAY = exports.RETRIES = void 0;
 exports.RETRIES = 3;
 exports.RETRY_DELAY = 1000;
 // Ceiling for a server-supplied Retry-After, so a long rate-limit window
@@ -16363,9 +16365,9 @@ exports.ADD_TASK_URL = "/addTask";
 exports.BASE_GITHUB_URL = "https://api.github.com/";
 exports.REPOS_URL = "/repos/";
 exports.PULLS_URL = "/pulls/";
-exports.PULLS_PAGE_SIZE = 100;
-exports.OPEN_PULLS_URL = `/pulls?state=open&per_page=${exports.PULLS_PAGE_SIZE}`;
 exports.REVIEWS_URL = "/reviews";
+exports.REVIEW_COMMENTS_PAGE_SIZE = 100;
+exports.REVIEW_COMMENTS_URL = `/comments?per_page=${exports.REVIEW_COMMENTS_PAGE_SIZE}`;
 exports.REVIEWERS_URL = "/requested_reviewers";
 
 
@@ -16448,8 +16450,6 @@ exports.allowed = [
     "pull_request_review",
     "pull_request_review_comment",
     "issue_comment",
-    "schedule",
-    "workflow_dispatch",
 ];
 
 
@@ -16643,7 +16643,7 @@ const INPUTS = __importStar(__nccwpck_require__(2120));
 const utils = __importStar(__nccwpck_require__(8541));
 exports.CI_STATUSES = ["approved", "rejected", "edit_pr_description"];
 const buildEvent = (context) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z;
     const payload = context.payload;
     const pullRequest = payload.pull_request || payload.issue;
     const commentText = (0, core_1.getInput)(INPUTS.COMMENT_TEXT);
@@ -16656,28 +16656,29 @@ const buildEvent = (context) => {
     return {
         eventName: context.eventName,
         action: payload.action || "",
-        // A schedule payload carries no repository; the runner's env does.
-        repoFullName: ((_g = payload.repository) === null || _g === void 0 ? void 0 : _g.full_name) || process.env.GITHUB_REPOSITORY || "",
+        repoFullName: ((_g = payload.repository) === null || _g === void 0 ? void 0 : _g.full_name) || "",
         taskIds: utils.extractAsanaTaskIds(pullRequest === null || pullRequest === void 0 ? void 0 : pullRequest.body),
         prNumber: pullRequest === null || pullRequest === void 0 ? void 0 : pullRequest.number,
         // issue_comment also fires on plain issues, which have no PR to read.
         isPullRequest: Boolean(payload.pull_request || ((_h = payload.issue) === null || _h === void 0 ? void 0 : _h.pull_request)),
+        prAuthor: ((_j = pullRequest === null || pullRequest === void 0 ? void 0 : pullRequest.user) === null || _j === void 0 ? void 0 : _j.login) || "",
         prUrl: (pullRequest === null || pullRequest === void 0 ? void 0 : pullRequest.html_url) || "",
         prState: (pullRequest === null || pullRequest === void 0 ? void 0 : pullRequest.state) || "",
-        prMerged: ((_j = payload.pull_request) === null || _j === void 0 ? void 0 : _j.merged) || false,
-        prBaseRef: ((_l = (_k = payload.pull_request) === null || _k === void 0 ? void 0 : _k.base) === null || _l === void 0 ? void 0 : _l.ref) || "",
-        isDraft: ((_m = payload.pull_request) === null || _m === void 0 ? void 0 : _m.draft) || false,
-        reviewState: ((_o = payload.review) === null || _o === void 0 ? void 0 : _o.state) || "",
-        reviewBody: ((_p = payload.review) === null || _p === void 0 ? void 0 : _p.body) || "",
-        commentUrl: ((_q = payload.comment) === null || _q === void 0 ? void 0 : _q.html_url) || ((_r = payload.review) === null || _r === void 0 ? void 0 : _r.html_url) || "",
-        rawCommentBody: ((_s = payload.comment) === null || _s === void 0 ? void 0 : _s.body) || ((_t = payload.review) === null || _t === void 0 ? void 0 : _t.body) || "",
-        commentPath: ((_u = payload.comment) === null || _u === void 0 ? void 0 : _u.path) || "",
-        commentLine: (_v = payload.comment) === null || _v === void 0 ? void 0 : _v.original_line,
+        prMerged: ((_k = payload.pull_request) === null || _k === void 0 ? void 0 : _k.merged) || false,
+        prBaseRef: ((_m = (_l = payload.pull_request) === null || _l === void 0 ? void 0 : _l.base) === null || _m === void 0 ? void 0 : _m.ref) || "",
+        isDraft: ((_o = payload.pull_request) === null || _o === void 0 ? void 0 : _o.draft) || false,
+        reviewId: (_p = payload.review) === null || _p === void 0 ? void 0 : _p.id,
+        reviewState: ((_q = payload.review) === null || _q === void 0 ? void 0 : _q.state) || "",
+        reviewBody: ((_r = payload.review) === null || _r === void 0 ? void 0 : _r.body) || "",
+        commentUrl: ((_s = payload.comment) === null || _s === void 0 ? void 0 : _s.html_url) || ((_t = payload.review) === null || _t === void 0 ? void 0 : _t.html_url) || "",
+        rawCommentBody: ((_u = payload.comment) === null || _u === void 0 ? void 0 : _u.body) || ((_v = payload.review) === null || _v === void 0 ? void 0 : _v.body) || "",
+        commentPath: ((_w = payload.comment) === null || _w === void 0 ? void 0 : _w.path) || "",
+        commentLine: (_x = payload.comment) === null || _x === void 0 ? void 0 : _x.original_line,
         // "file" for a whole-file review comment, "line" otherwise. GitHub still
         // reports original_line as 1 on a file-level comment, so this is the only
         // field that tells the two apart.
-        commentSubjectType: ((_w = payload.comment) === null || _w === void 0 ? void 0 : _w.subject_type) || "",
-        commentInReplyTo: (_x = payload.comment) === null || _x === void 0 ? void 0 : _x.in_reply_to_id,
+        commentSubjectType: ((_y = payload.comment) === null || _y === void 0 ? void 0 : _y.subject_type) || "",
+        commentInReplyTo: (_z = payload.comment) === null || _z === void 0 ? void 0 : _z.in_reply_to_id,
         username,
         requestedReviewers,
         eventReviewer: payload.requested_reviewer
@@ -17340,7 +17341,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.reconcileOpenPullRequests = exports.reconcileReviewState = exports.handleReview = void 0;
+exports.reconcileReviewState = exports.handleReview = void 0;
 const githubAxios_1 = __importDefault(__nccwpck_require__(1125));
 const REQUESTS = __importStar(__nccwpck_require__(4291));
 const SECTIONS = __importStar(__nccwpck_require__(6081));
@@ -17350,19 +17351,46 @@ const format = __importStar(__nccwpck_require__(6264));
 const comment_1 = __nccwpck_require__(32);
 const SUBTASK_REVIEW_STATES = ["approved", "pending", "changes_requested"];
 const DEFINITIVE_REVIEW_STATES = ["CHANGES_REQUESTED", "APPROVED", "DISMISSED"];
+const pullRequestUrl = (event) => `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
 // A "Comment" review from a tier reviewer is a rejection here: they looked
 // and did not approve, so the author answers it and re-requests them, exactly
-// as for changes requested. A standalone reply to a thread also arrives as a
-// commented review, but with no summary body - that one is only a comment.
-const verdictOf = (state, body, user) => state === "COMMENTED" && (body === null || body === void 0 ? void 0 : body.trim()) && utils.isReviewTier(user)
-    ? "CHANGES_REQUESTED"
-    : state;
+// as for changes requested. GitHub files every inline comment as a review of
+// its own, a lone reply in an existing thread included, so a comment review
+// with no summary counts only when it opened a thread. The author annotating
+// their own diff is never a verdict.
+const isTierComment = (review, author) => review.state === "COMMENTED" &&
+    review.user.login !== author &&
+    utils.isReviewTier(utils.findUserByGithubName(review.user.login));
+const verdictOf = (review, author, threadOpeners) => {
+    var _a;
+    return isTierComment(review, author) &&
+        (((_a = review.body) === null || _a === void 0 ? void 0 : _a.trim()) || threadOpeners.has(review.id))
+        ? "CHANGES_REQUESTED"
+        : review.state;
+};
+// The reviews that opened a thread, read only when a verdict depends on it:
+// a tier reviewer's comment review with no summary.
+const findThreadOpeners = (githubUrl, reviews, author) => __awaiter(void 0, void 0, void 0, function* () {
+    const openers = new Set();
+    const needed = reviews.some((review) => { var _a; return isTierComment(review, author) && !((_a = review.body) === null || _a === void 0 ? void 0 : _a.trim()); });
+    if (!needed)
+        return openers;
+    for (let page = 1;; page++) {
+        const comments = (yield githubAxios_1.default.get(`${githubUrl}${REQUESTS.REVIEW_COMMENTS_URL}&page=${page}`)).data;
+        for (const comment of comments) {
+            if (!comment.in_reply_to_id)
+                openers.add(comment.pull_request_review_id);
+        }
+        if (comments.length < REQUESTS.REVIEW_COMMENTS_PAGE_SIZE)
+            return openers;
+    }
+});
 // Latest definitive review per GitHub login, mapped in the user table or not.
-const latestDefinitiveReviews = (reviews) => {
+const latestDefinitiveReviews = (reviews, author, threadOpeners) => {
     const latest = {};
     for (const review of reviews) {
         const login = review.user.login;
-        const state = verdictOf(review.state, review.body, utils.findUserByGithubName(login));
+        const state = verdictOf(review, author, threadOpeners);
         if (!DEFINITIVE_REVIEW_STATES.includes(state))
             continue;
         if (!latest[login] || latest[login].submitted_at < review.submitted_at) {
@@ -17383,9 +17411,9 @@ const latestDefinitiveReviews = (reviews) => {
 // from someone else (otto's included) deliberately does NOT invalidate
 // it - that mirrors GitHub's own semantics, where invalidating on revision
 // is an explicit dismissal, never a side effect of another review.
-const tallyReviews = (reviews, requestedReviewers) => {
+const tallyReviews = (reviews, requestedReviewers, author, threadOpeners) => {
     const latestReviews = {};
-    const latestDefinitive = latestDefinitiveReviews(reviews);
+    const latestDefinitive = latestDefinitiveReviews(reviews, author, threadOpeners);
     for (const githubName of Object.keys(latestDefinitive)) {
         const reviewerObj = utils.findUserByGithubName(githubName);
         if (!reviewerObj)
@@ -17476,7 +17504,8 @@ const tierVerdict = (latestReviews) => {
 // cascade PEER_DEV -> DEV -> QA, creating the next tier's subtasks as the
 // previous tier completes.
 const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, function* () {
-    const githubUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
+    var _a;
+    const githubUrl = pullRequestUrl(event);
     // A conflicting PR has a diff nobody has reviewed yet - resolving the
     // conflict writes it. So while the conflict stands the cascade neither
     // hands the next tier a review nor promotes the task; once it is resolved,
@@ -17487,8 +17516,11 @@ const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, funct
     const pullRequestResponse = yield githubAxios_1.default.get(githubUrl);
     if (pullRequestResponse.data.mergeable === false)
         return [];
-    const reviewsResponse = yield githubAxios_1.default.get(`${githubUrl}${REQUESTS.REVIEWS_URL}`);
-    const latestReviews = tallyReviews(reviewsResponse.data, event.requestedReviewers);
+    const author = (_a = pullRequestResponse.data.user) === null || _a === void 0 ? void 0 : _a.login;
+    const reviews = (yield githubAxios_1.default.get(`${githubUrl}${REQUESTS.REVIEWS_URL}`))
+        .data;
+    const threadOpeners = yield findThreadOpeners(githubUrl, reviews, author);
+    const latestReviews = tallyReviews(reviews, event.requestedReviewers, author, threadOpeners);
     yield resummonDismissedReviewers(githubUrl, latestReviews);
     const { approvedByPeer, approvedByDev, approvedByQa, fullyApproved } = tierVerdict(latestReviews);
     const devReviewers = event.requestedReviewers.filter((reviewer) => reviewer.team === "DEV");
@@ -17519,7 +17551,14 @@ const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, funct
 });
 const handleReview = (event) => __awaiter(void 0, void 0, void 0, function* () {
     const reviewer = utils.findUserByGithubName(event.username);
-    const verdict = verdictOf(event.reviewState.toUpperCase(), event.reviewBody, reviewer).toLowerCase();
+    const review = {
+        id: event.reviewId,
+        state: event.reviewState.toUpperCase(),
+        body: event.reviewBody,
+        user: { login: event.username },
+    };
+    const threadOpeners = yield findThreadOpeners(pullRequestUrl(event), [review], event.prAuthor);
+    const verdict = verdictOf(review, event.prAuthor, threadOpeners).toLowerCase();
     // Mirror the reviewer's verdict onto their approval subtask.
     if (event.action === "submitted" && SUBTASK_REVIEW_STATES.includes(verdict)) {
         for (const taskId of event.taskIds) {
@@ -17603,10 +17642,10 @@ exports.handleReview = handleReview;
 // than trusting the payload: a parallel run may have moved the PR on since
 // the webhook fired.
 const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a;
+    var _b, _c;
     if (!event.taskIds.length || !event.isPullRequest)
         return;
-    const githubUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
+    const githubUrl = pullRequestUrl(event);
     const pullRequest = (yield githubAxios_1.default.get(githubUrl)).data;
     if (pullRequest.state !== "open" || pullRequest.draft)
         return;
@@ -17624,12 +17663,14 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
     // reviewer - whoever made it, since the review handler parks on any.
     const reviews = (yield githubAxios_1.default.get(`${githubUrl}${REQUESTS.REVIEWS_URL}`))
         .data;
-    const latest = latestDefinitiveReviews(reviews);
+    const author = (_b = pullRequest.user) === null || _b === void 0 ? void 0 : _b.login;
+    const threadOpeners = yield findThreadOpeners(githubUrl, reviews, author);
+    const latest = latestDefinitiveReviews(reviews, author, threadOpeners);
     const changesRequestStands = Object.keys(latest).some((login) => latest[login].state === "CHANGES_REQUESTED" &&
         !requestedLogins.includes(login));
     if (changesRequestStands)
         return;
-    const latestReviews = tallyReviews(reviews, requestedReviewers);
+    const latestReviews = tallyReviews(reviews, requestedReviewers, author, threadOpeners);
     // Summoned back the moment the dismissal syncs, not only when someone
     // else happens to approve later.
     yield resummonDismissedReviewers(githubUrl, latestReviews);
@@ -17643,8 +17684,12 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
     const leaveAlone = [
         ...SECTIONS.BLOCKED_SECTIONS,
         ...SECTIONS.RELEASED_SECTIONS,
+        SECTIONS.DONE,
     ];
     for (const taskId of event.taskIds) {
+        // A task a person closed is finished, whatever its pull request says.
+        if ((yield asana.getTask(taskId)).completed)
+            continue;
         const ciSubtask = yield asana.getApprovalSubtask(taskId, true, otto);
         if ((ciSubtask === null || ciSubtask === void 0 ? void 0 : ciSubtask.approval_status) === "rejected")
             continue;
@@ -17653,7 +17698,7 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
         // answer. GitHub's verdict wins.
         for (const subtask of yield asana.getAllApprovalSubtasks(taskId, otto)) {
             if (subtask.name === "Review" &&
-                approvedAsanaIds.includes((_a = subtask.assignee) === null || _a === void 0 ? void 0 : _a.gid)) {
+                approvedAsanaIds.includes((_c = subtask.assignee) === null || _c === void 0 ? void 0 : _c.gid)) {
                 yield asana.updateApprovalSubtask(subtask.gid, {
                     approval_status: "approved",
                 });
@@ -17672,34 +17717,6 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
     }
 });
 exports.reconcileReviewState = reconcileReviewState;
-// No event to mirror: walk every open pull request that links a task and
-// restate each one - the safety net for a webhook that never fired or a run
-// that died half-way. One pull request failing does not stop the rest; the
-// run still ends red so the failure is visible.
-const reconcileOpenPullRequests = (event) => __awaiter(void 0, void 0, void 0, function* () {
-    const failed = [];
-    for (let page = 1;; page++) {
-        const pullRequests = (yield githubAxios_1.default.get(`${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.OPEN_PULLS_URL}&page=${page}`)).data;
-        for (const pullRequest of pullRequests) {
-            const taskIds = utils.extractAsanaTaskIds(pullRequest.body);
-            if (!taskIds.length)
-                continue;
-            try {
-                yield (0, exports.reconcileReviewState)(Object.assign(Object.assign({}, event), { taskIds, prNumber: pullRequest.number, prUrl: pullRequest.html_url, isPullRequest: true }));
-            }
-            catch (error) {
-                console.warn(`Failed to reconcile pull request #${pullRequest.number}:`, error);
-                failed.push(pullRequest.number);
-            }
-        }
-        if (pullRequests.length < REQUESTS.PULLS_PAGE_SIZE)
-            break;
-    }
-    if (failed.length) {
-        throw new Error(`Failed to reconcile pull requests #${failed.join(", #")}`);
-    }
-});
-exports.reconcileOpenPullRequests = reconcileOpenPullRequests;
 
 
 /***/ }),
@@ -17897,13 +17914,6 @@ const run = (context) => __awaiter(void 0, void 0, void 0, function* () {
         // CI-status invocations (comment-text: approved / rejected /
         // edit_pr_description) come from the consumer repos' CI pipelines and
         // only sync the CI verdict — they never post PR comments.
-        // A scheduled or manual run has no event to mirror; it restates every
-        // open pull request instead.
-        if (event.eventName === "schedule" ||
-            event.eventName === "workflow_dispatch") {
-            yield (0, review_1.reconcileOpenPullRequests)(event);
-            return;
-        }
         if (event.eventName === "pull_request" && event.ciStatus) {
             yield (0, ci_1.handleCiStatus)(event);
         }

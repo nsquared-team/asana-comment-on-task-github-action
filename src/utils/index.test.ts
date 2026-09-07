@@ -4,7 +4,7 @@ import * as ERRORS from "../constants/errors";
 describe("validateTrigger", () => {
   test("throws for unsupported events, including push", () => {
     expect(() => utils.validateTrigger("push")).toThrow(ERRORS.WRONG_TRIGGER);
-    expect(() => utils.validateTrigger("release")).toThrow(
+    expect(() => utils.validateTrigger("workflow_dispatch")).toThrow(
       ERRORS.WRONG_TRIGGER
     );
   });
@@ -16,8 +16,6 @@ describe("validateTrigger", () => {
       utils.validateTrigger("pull_request_review_comment")
     ).not.toThrow();
     expect(() => utils.validateTrigger("issue_comment")).not.toThrow();
-    expect(() => utils.validateTrigger("schedule")).not.toThrow();
-    expect(() => utils.validateTrigger("workflow_dispatch")).not.toThrow();
   });
 });
 
