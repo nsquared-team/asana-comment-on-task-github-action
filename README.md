@@ -23,7 +23,7 @@ stateDiagram-v2
     [*] --> Testing : opened/reopened ready for review
     InProgress --> Testing : PR ready for review / review requested
     Testing --> Next : CI fails / changes requested / merge conflict
-    Next --> Testing : CI green again (ready PRs only)
+    Next --> Testing : any event once the PR is ready + mergeable + green with no changes-request standing
     Testing --> Approved : all reviewer tiers approved
     Approved --> Testing : an approval is dismissed
     Approved --> Release : PR merged into a release branch
@@ -41,7 +41,13 @@ stateDiagram-v2
 | Review: dismissed | → Testing / Review | A dismissed approval un-approves the PR, so the task cannot sit in Approved on a sign-off that no longer exists. Tasks in In Progress or Released sections stay put. |
 | Merged | → release section | `aaardvark-app` / `blinkmetrics-app`: `master` → *Released in Alpha*, `beta` → *Released in Beta*, `production` → *Released*. Every other repo: *Done*. A merge into any other branch of a staged-release repo — a stacked PR — ships nothing and moves nothing. Tasks are **never auto-completed**, and a merge **never deletes approval subtasks** — they are the record of who signed off (and who never answered), and an approval given just before an auto-merge may not have reached its subtask yet. Instead, a still-open "Review" subtask is renamed **"FYI Review"**: nobody is waiting on it now the code is in, but the reviewer can still read it. A subtask that already carries a prefix ("FYI Review", or any other "… Review") and one that has been answered are both left alone, so a repeated merge event changes nothing. A stacked merge relabels too — it ships nothing, but its reviews are just as finished. |
 | Closed without merging | → In Progress | Pending "Review" subtasks are deleted; the task goes back to its author. Tasks in Blocked or Released sections stay put. |
-| Merge-conflict comment from otto | → Next | Task reopened; pending "Review" subtasks are deleted (the CI subtask survives). While the conflict stands the task cannot be promoted: see the approval row. |
+| Merge-conflict comment from otto | → Next | Task reopened; pending "Review" subtasks are deleted (the CI subtask survives). While the conflict stands the task cannot be promoted: see the approval row. Once it is resolved, the next event that reaches the action — otto's resolved comment, the green CI run, any review or comment — restores the subtasks and returns the task to Testing / Review (see the re-check below). |
+
+### Every event re-checks the review state
+
+The rows above each mirror one transition. After any of them runs, the action reads the PR fresh from GitHub and restates the whole review state: if the PR is open, ready for review, mergeable, its last CI verdict is not a rejection, and no changes-request stands whose reviewer has not been re-requested, then every reviewer of the active tier GitHub is still waiting on gets a pending "Review" subtask and the task moves to Testing / Review. That is what makes Asana converge on the PR whatever order events arrive in — a conflict resolved, a webhook that never fired, two runs that overlapped.
+
+The re-check respects Blocked and the released columns, does nothing while GitHub has not computed mergeability yet, and skips CI-rejection and description-edit runs (the first has just parked the task on purpose, the second never touches Asana).
 
 Section names are matched per board; boards using "Blocked / Waiting" instead of "Blocked" (and similar variants) are both supported. A task in several projects is only moved when *none* of its sections is a protected one — a task parked in Blocked on one board is not quietly moved on another.
 
@@ -57,7 +63,7 @@ The same action runs in two modes, switched by `comment-text`:
 | Input | Required | Purpose |
 | --- | --- | --- |
 | `asana-pat` | yes | Asana personal access token for all Asana calls. |
-| `github-pat` | for reviews / description edits | Fetches PR reviews, re-requests reviewers whose approval was dismissed (approval cascade), and edits the PR body (`edit_pr_description`). |
+| `github-pat` | yes | Reads the PR and its reviews on every event (the review re-check and the approval cascade), re-requests reviewers whose approval was dismissed, and edits the PR body (`edit_pr_description`). |
 | `comment-text` | no | Mode switch — see above. |
 | `action-url` | CI mode | Link to the CI run, shown on the CI subtask. |
 | `pr-description` | `edit_pr_description` mode | Sandbox block content. |

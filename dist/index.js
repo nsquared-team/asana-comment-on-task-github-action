@@ -16628,7 +16628,7 @@ const INPUTS = __importStar(__nccwpck_require__(2120));
 const utils = __importStar(__nccwpck_require__(8541));
 exports.CI_STATUSES = ["approved", "rejected", "edit_pr_description"];
 const buildEvent = (context) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x;
     const payload = context.payload;
     const pullRequest = payload.pull_request || payload.issue;
     const commentText = (0, core_1.getInput)(INPUTS.COMMENT_TEXT);
@@ -16644,22 +16644,24 @@ const buildEvent = (context) => {
         repoFullName: ((_g = payload.repository) === null || _g === void 0 ? void 0 : _g.full_name) || "",
         taskIds: utils.extractAsanaTaskIds(pullRequest === null || pullRequest === void 0 ? void 0 : pullRequest.body),
         prNumber: pullRequest === null || pullRequest === void 0 ? void 0 : pullRequest.number,
+        // issue_comment also fires on plain issues, which have no PR to read.
+        isPullRequest: Boolean(payload.pull_request || ((_h = payload.issue) === null || _h === void 0 ? void 0 : _h.pull_request)),
         prUrl: (pullRequest === null || pullRequest === void 0 ? void 0 : pullRequest.html_url) || "",
         prState: (pullRequest === null || pullRequest === void 0 ? void 0 : pullRequest.state) || "",
-        prMerged: ((_h = payload.pull_request) === null || _h === void 0 ? void 0 : _h.merged) || false,
-        prBaseRef: ((_k = (_j = payload.pull_request) === null || _j === void 0 ? void 0 : _j.base) === null || _k === void 0 ? void 0 : _k.ref) || "",
-        isDraft: ((_l = payload.pull_request) === null || _l === void 0 ? void 0 : _l.draft) || false,
-        reviewState: ((_m = payload.review) === null || _m === void 0 ? void 0 : _m.state) || "",
-        reviewBody: ((_o = payload.review) === null || _o === void 0 ? void 0 : _o.body) || "",
-        commentUrl: ((_p = payload.comment) === null || _p === void 0 ? void 0 : _p.html_url) || ((_q = payload.review) === null || _q === void 0 ? void 0 : _q.html_url) || "",
-        rawCommentBody: ((_r = payload.comment) === null || _r === void 0 ? void 0 : _r.body) || ((_s = payload.review) === null || _s === void 0 ? void 0 : _s.body) || "",
-        commentPath: ((_t = payload.comment) === null || _t === void 0 ? void 0 : _t.path) || "",
-        commentLine: (_u = payload.comment) === null || _u === void 0 ? void 0 : _u.original_line,
+        prMerged: ((_j = payload.pull_request) === null || _j === void 0 ? void 0 : _j.merged) || false,
+        prBaseRef: ((_l = (_k = payload.pull_request) === null || _k === void 0 ? void 0 : _k.base) === null || _l === void 0 ? void 0 : _l.ref) || "",
+        isDraft: ((_m = payload.pull_request) === null || _m === void 0 ? void 0 : _m.draft) || false,
+        reviewState: ((_o = payload.review) === null || _o === void 0 ? void 0 : _o.state) || "",
+        reviewBody: ((_p = payload.review) === null || _p === void 0 ? void 0 : _p.body) || "",
+        commentUrl: ((_q = payload.comment) === null || _q === void 0 ? void 0 : _q.html_url) || ((_r = payload.review) === null || _r === void 0 ? void 0 : _r.html_url) || "",
+        rawCommentBody: ((_s = payload.comment) === null || _s === void 0 ? void 0 : _s.body) || ((_t = payload.review) === null || _t === void 0 ? void 0 : _t.body) || "",
+        commentPath: ((_u = payload.comment) === null || _u === void 0 ? void 0 : _u.path) || "",
+        commentLine: (_v = payload.comment) === null || _v === void 0 ? void 0 : _v.original_line,
         // "file" for a whole-file review comment, "line" otherwise. GitHub still
         // reports original_line as 1 on a file-level comment, so this is the only
         // field that tells the two apart.
-        commentSubjectType: ((_v = payload.comment) === null || _v === void 0 ? void 0 : _v.subject_type) || "",
-        commentInReplyTo: (_w = payload.comment) === null || _w === void 0 ? void 0 : _w.in_reply_to_id,
+        commentSubjectType: ((_w = payload.comment) === null || _w === void 0 ? void 0 : _w.subject_type) || "",
+        commentInReplyTo: (_x = payload.comment) === null || _x === void 0 ? void 0 : _x.in_reply_to_id,
         username,
         requestedReviewers,
         eventReviewer: payload.requested_reviewer
@@ -17305,7 +17307,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.handleReview = void 0;
+exports.reconcileReviewState = exports.handleReview = void 0;
 const githubAxios_1 = __importDefault(__nccwpck_require__(1125));
 const REQUESTS = __importStar(__nccwpck_require__(4291));
 const SECTIONS = __importStar(__nccwpck_require__(6081));
@@ -17315,6 +17317,19 @@ const format = __importStar(__nccwpck_require__(6264));
 const comment_1 = __nccwpck_require__(32);
 const SUBTASK_REVIEW_STATES = ["approved", "pending", "changes_requested"];
 const DEFINITIVE_REVIEW_STATES = ["CHANGES_REQUESTED", "APPROVED", "DISMISSED"];
+// Latest definitive review per GitHub login, mapped in the user table or not.
+const latestDefinitiveReviews = (reviews) => {
+    const latest = {};
+    for (const review of reviews) {
+        if (!DEFINITIVE_REVIEW_STATES.includes(review.state))
+            continue;
+        const login = review.user.login;
+        if (!latest[login] || latest[login].submitted_at < review.submitted_at) {
+            latest[login] = review;
+        }
+    }
+    return latest;
+};
 // A PR is fully approved only when every tier has signed off; approvals
 // cascade PEER_DEV -> DEV -> QA, creating the next tier's subtasks as the
 // previous tier completes.
@@ -17342,21 +17357,16 @@ const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, funct
     // it - that mirrors GitHub's own semantics, where invalidating on revision
     // is an explicit dismissal, never a side effect of another review.
     const latestReviews = {};
-    for (const review of reviews) {
-        const githubName = review.user.login;
+    const latestDefinitive = latestDefinitiveReviews(reviews);
+    for (const githubName of Object.keys(latestDefinitive)) {
         const reviewerObj = utils.findUserByGithubName(githubName);
         if (!reviewerObj)
             continue;
-        if (!DEFINITIVE_REVIEW_STATES.includes(review.state))
-            continue;
-        if (!latestReviews[githubName] ||
-            latestReviews[githubName].timestamp < review.submitted_at) {
-            latestReviews[githubName] = {
-                state: review.state,
-                timestamp: review.submitted_at,
-                info: reviewerObj,
-            };
-        }
+        latestReviews[githubName] = {
+            state: latestDefinitive[githubName].state,
+            timestamp: latestDefinitive[githubName].submitted_at,
+            info: reviewerObj,
+        };
     }
     // A reviewer still in requested_reviewers has a re-requested (pending)
     // review, unless their latest review already approved.
@@ -17520,6 +17530,55 @@ const handleReview = (event) => __awaiter(void 0, void 0, void 0, function* () {
     yield (0, comment_1.postCommentToTasks)(event, commentText);
 });
 exports.handleReview = handleReview;
+// Every handler mirrors one transition. This runs after each of them and
+// restates the invariant they all approximate: a pull request that is open,
+// ready, mergeable, green and under no standing changes-request is in
+// review, so each active-tier reviewer GitHub is still waiting on holds a
+// pending Review subtask and the task sits in Testing / Review. It is what
+// puts the approvals back once a conflict is resolved, and what repairs a
+// transition that a missed or overlapping event left half-done. It reads
+// the PR fresh rather than trusting the payload: a parallel run may have
+// moved the PR on since the webhook fired.
+const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, function* () {
+    if (!event.taskIds.length || !event.isPullRequest)
+        return;
+    const githubUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
+    const pullRequest = (yield githubAxios_1.default.get(githubUrl)).data;
+    if (pullRequest.state !== "open" || pullRequest.draft)
+        return;
+    // Unknown mergeability is not evidence here. The cascade reads it as
+    // mergeable so an unanswered GitHub never parks a task; acting on it after
+    // a conflict alert would hand back the very subtasks the alert cleared.
+    if (pullRequest.mergeable !== true)
+        return;
+    const requestedLogins = (pullRequest.requested_reviewers || []).map((reviewer) => reviewer.login);
+    const activeTier = utils.pickReviewerTier(requestedLogins.map(utils.findUserByGithubName));
+    if (!activeTier.length)
+        return;
+    // A changes-request parks the task until the author re-requests that
+    // reviewer - whoever made it, since the review handler parks on any.
+    const reviews = (yield githubAxios_1.default.get(`${githubUrl}${REQUESTS.REVIEWS_URL}`))
+        .data;
+    const latest = latestDefinitiveReviews(reviews);
+    const changesRequestStands = Object.keys(latest).some((login) => latest[login].state === "CHANGES_REQUESTED" &&
+        !requestedLogins.includes(login));
+    if (changesRequestStands)
+        return;
+    const otto = asana.ottoUser();
+    for (const taskId of event.taskIds) {
+        const ciSubtask = yield asana.getApprovalSubtask(taskId, true, otto);
+        if ((ciSubtask === null || ciSubtask === void 0 ? void 0 : ciSubtask.approval_status) === "rejected")
+            continue;
+        yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, [
+            ...SECTIONS.BLOCKED_SECTIONS,
+            ...SECTIONS.RELEASED_SECTIONS,
+        ]);
+        for (const reviewer of activeTier) {
+            yield asana.addRequestedReview(taskId, reviewer, event.prUrl);
+        }
+    }
+});
+exports.reconcileReviewState = reconcileReviewState;
 
 
 /***/ }),
@@ -17719,19 +17778,27 @@ const run = (context) => __awaiter(void 0, void 0, void 0, function* () {
         // only sync the CI verdict — they never post PR comments.
         if (event.eventName === "pull_request" && event.ciStatus) {
             yield (0, ci_1.handleCiStatus)(event);
-            return;
         }
-        switch (event.eventName) {
-            case "pull_request":
-                yield (0, pullRequest_1.handlePullRequest)(event);
-                break;
-            case "pull_request_review":
-                yield (0, review_1.handleReview)(event);
-                break;
-            case "issue_comment":
-            case "pull_request_review_comment":
-                yield (0, comment_1.handleComment)(event);
-                break;
+        else {
+            switch (event.eventName) {
+                case "pull_request":
+                    yield (0, pullRequest_1.handlePullRequest)(event);
+                    break;
+                case "pull_request_review":
+                    yield (0, review_1.handleReview)(event);
+                    break;
+                case "issue_comment":
+                case "pull_request_review_comment":
+                    yield (0, comment_1.handleComment)(event);
+                    break;
+            }
+        }
+        // Each handler mirrors one transition; the reconcile restates the whole
+        // review state afterwards, so a PR in review carries its approvals
+        // whichever event got it there. A CI rejection has just parked the task
+        // on purpose, and a description edit never touches Asana.
+        if (event.ciStatus === "" || event.ciStatus === "approved") {
+            yield (0, review_1.reconcileReviewState)(event);
         }
     }
     catch (error) {

@@ -10,6 +10,7 @@ export interface SyncEvent {
   repoFullName: string;
   taskIds: string[];
   prNumber?: number;
+  isPullRequest: boolean;
   prUrl: string;
   prState: string;
   prMerged: boolean;
@@ -51,6 +52,8 @@ export const buildEvent = (context: any): SyncEvent => {
     repoFullName: payload.repository?.full_name || "",
     taskIds: utils.extractAsanaTaskIds(pullRequest?.body),
     prNumber: pullRequest?.number,
+    // issue_comment also fires on plain issues, which have no PR to read.
+    isPullRequest: Boolean(payload.pull_request || payload.issue?.pull_request),
     prUrl: pullRequest?.html_url || "",
     prState: pullRequest?.state || "",
     prMerged: payload.pull_request?.merged || false,

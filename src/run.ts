@@ -3,7 +3,7 @@ import * as utils from "./utils";
 import { buildEvent } from "./event";
 import { handleCiStatus } from "./handlers/ci";
 import { handlePullRequest } from "./handlers/pullRequest";
-import { handleReview } from "./handlers/review";
+import { handleReview, reconcileReviewState } from "./handlers/review";
 import { handleComment } from "./handlers/comment";
 
 export const run = async (context: any) => {
@@ -19,20 +19,27 @@ export const run = async (context: any) => {
     // only sync the CI verdict — they never post PR comments.
     if (event.eventName === "pull_request" && event.ciStatus) {
       await handleCiStatus(event);
-      return;
+    } else {
+      switch (event.eventName) {
+        case "pull_request":
+          await handlePullRequest(event);
+          break;
+        case "pull_request_review":
+          await handleReview(event);
+          break;
+        case "issue_comment":
+        case "pull_request_review_comment":
+          await handleComment(event);
+          break;
+      }
     }
 
-    switch (event.eventName) {
-      case "pull_request":
-        await handlePullRequest(event);
-        break;
-      case "pull_request_review":
-        await handleReview(event);
-        break;
-      case "issue_comment":
-      case "pull_request_review_comment":
-        await handleComment(event);
-        break;
+    // Each handler mirrors one transition; the reconcile restates the whole
+    // review state afterwards, so a PR in review carries its approvals
+    // whichever event got it there. A CI rejection has just parked the task
+    // on purpose, and a description edit never touches Asana.
+    if (event.ciStatus === "" || event.ciStatus === "approved") {
+      await reconcileReviewState(event);
     }
   } catch (error) {
     if (utils.isAxiosError(error)) {
