@@ -16210,16 +16210,22 @@ const deleteReviewSubtasks = (taskId) => __awaiter(void 0, void 0, void 0, funct
 exports.deleteReviewSubtasks = deleteReviewSubtasks;
 // Once the PR is merged nobody is waiting on an unanswered review, but the
 // subtask still records who never answered - so it is relabelled rather than
-// deleted. Matching the bare name leaves an already-prefixed subtask ("FYI
-// Review" from an earlier merge event, or any other "... Review") untouched,
-// which is what makes a repeated merge event a no-op. getAllApprovalSubtasks
-// only returns incomplete subtasks, so an answered review keeps its name.
-const relabelReviewSubtasksAsFyi = (taskId) => __awaiter(void 0, void 0, void 0, function* () {
+// deleted. The label names the mainline branch the code landed on; a merge
+// into any other branch is a sub-PR whose code has not shipped. Matching the
+// bare name leaves an already-prefixed subtask ("FYI Review ..." from an
+// earlier merge event, or any other "... Review") untouched, which is what
+// makes a repeated merge event a no-op. getAllApprovalSubtasks only returns
+// incomplete subtasks, so an answered review keeps its name.
+const NAMED_MERGE_BASES = ["main", "master", "beta", "production"];
+const relabelReviewSubtasksAsFyi = (taskId, baseRef) => __awaiter(void 0, void 0, void 0, function* () {
+    const landedOn = NAMED_MERGE_BASES.includes(baseRef) ? baseRef : "sub-PR";
     const subtasks = yield (0, exports.getAllApprovalSubtasks)(taskId, (0, exports.ottoUser)());
     for (const subtask of subtasks) {
         if (subtask.name !== "Review")
             continue;
-        yield (0, exports.updateApprovalSubtask)(subtask.gid, { name: "FYI Review" });
+        yield (0, exports.updateApprovalSubtask)(subtask.gid, {
+            name: `FYI Review - merged to ${landedOn}`,
+        });
     }
 });
 exports.relabelReviewSubtasksAsFyi = relabelReviewSubtasksAsFyi;
@@ -17256,7 +17262,7 @@ const handlePullRequest = (event) => __awaiter(void 0, void 0, void 0, function*
                 // The code is in, so an unanswered review is now an FYI. Relabelling
                 // ahead of the section decision is deliberate: a stacked merge ships
                 // nothing and moves nothing, but its reviews are just as finished.
-                yield asana.relabelReviewSubtasksAsFyi(taskId);
+                yield asana.relabelReviewSubtasksAsFyi(taskId, event.prBaseRef);
             }
             // A merge into a non-release branch ships nothing, so it moves nothing.
             if (!targetSection)
