@@ -14,4 +14,5 @@ A reviewer looking at Asana sees what GitHub says: a pull request that is up for
 - [x] A reviewer taken off the pull request loses their pending Review subtask.
 - [x] A scheduled or manual run restates every open pull request that links a task, and one failing pull request neither stops the rest nor hides.
 - [x] Restating changes nothing a person would notice when Asana already matches: a task in its section stays in place, a reviewer asked to review again is waited on, and taking a reviewer off the pull request touches only the subtask the action created.
+- [x] A "Comment" review from a tier reviewer is a rejection: it parks the task like changes requested and holds the re-check until that reviewer is re-requested; a thread reply or a bot's comment review does not.
 - [x] The README state machine states the invariant.

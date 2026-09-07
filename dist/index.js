@@ -17344,15 +17344,23 @@ const format = __importStar(__nccwpck_require__(6264));
 const comment_1 = __nccwpck_require__(32);
 const SUBTASK_REVIEW_STATES = ["approved", "pending", "changes_requested"];
 const DEFINITIVE_REVIEW_STATES = ["CHANGES_REQUESTED", "APPROVED", "DISMISSED"];
+// A "Comment" review from a tier reviewer is a rejection here: they looked
+// and did not approve, so the author answers it and re-requests them, exactly
+// as for changes requested. A standalone reply to a thread also arrives as a
+// commented review, but with no summary body - that one is only a comment.
+const verdictOf = (state, body, user) => state === "COMMENTED" && (body === null || body === void 0 ? void 0 : body.trim()) && utils.isReviewTier(user)
+    ? "CHANGES_REQUESTED"
+    : state;
 // Latest definitive review per GitHub login, mapped in the user table or not.
 const latestDefinitiveReviews = (reviews) => {
     const latest = {};
     for (const review of reviews) {
-        if (!DEFINITIVE_REVIEW_STATES.includes(review.state))
-            continue;
         const login = review.user.login;
+        const state = verdictOf(review.state, review.body, utils.findUserByGithubName(login));
+        if (!DEFINITIVE_REVIEW_STATES.includes(state))
+            continue;
         if (!latest[login] || latest[login].submitted_at < review.submitted_at) {
-            latest[login] = review;
+            latest[login] = Object.assign(Object.assign({}, review), { state });
         }
     }
     return latest;
@@ -17505,21 +17513,20 @@ const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, funct
 });
 const handleReview = (event) => __awaiter(void 0, void 0, void 0, function* () {
     const reviewer = utils.findUserByGithubName(event.username);
+    const verdict = verdictOf(event.reviewState.toUpperCase(), event.reviewBody, reviewer).toLowerCase();
     // Mirror the reviewer's verdict onto their approval subtask.
-    if (event.action === "submitted" &&
-        SUBTASK_REVIEW_STATES.includes(event.reviewState)) {
+    if (event.action === "submitted" && SUBTASK_REVIEW_STATES.includes(verdict)) {
         for (const taskId of event.taskIds) {
             const approvalSubtask = yield asana.getApprovalSubtask(taskId, false, reviewer);
             if (approvalSubtask) {
                 yield asana.updateApprovalSubtask(approvalSubtask.gid, {
-                    approval_status: event.reviewState,
+                    approval_status: verdict,
                 });
             }
         }
     }
     // Changes requested: the task goes back to the queue.
-    if (event.action === "submitted" &&
-        event.reviewState === "changes_requested") {
+    if (event.action === "submitted" && verdict === "changes_requested") {
         for (const taskId of event.taskIds) {
             yield asana.deleteReviewSubtasks(taskId);
             yield asana.moveTaskToSection(taskId, SECTIONS.NEXT, SECTIONS.PROTECTED_FROM_DEMOTION);

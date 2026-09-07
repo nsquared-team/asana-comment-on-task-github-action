@@ -22,7 +22,7 @@ stateDiagram-v2
     [*] --> InProgress : opened/reopened as draft, converted to draft, or closed unmerged
     [*] --> Testing : opened/reopened ready for review
     InProgress --> Testing : PR ready for review / review requested
-    Testing --> Next : CI fails / changes requested / merge conflict
+    Testing --> Next : CI fails / changes requested or comment review / merge conflict
     Next --> Testing : any event once the PR is ready + mergeable + green with no changes-request standing
     Testing --> Approved : all reviewer tiers approved
     Approved --> Testing : an approval is dismissed
@@ -36,7 +36,7 @@ stateDiagram-v2
 | CI rejected (`comment-text: rejected`) | → Next | Pending review subtasks are deleted; the "Automated CI Testing" subtask records the verdict. Tasks in In Progress or Released sections stay put. |
 | CI approved after a rejection | → Testing / Review | Only when the PR is not a draft; review subtasks are recreated. |
 | Review: changes requested | → Next | Task is also reopened (marked incomplete). Tasks in In Progress or Released sections stay put. |
-| Review: comment | *(no move)* | Comment reviews only mirror the comment to Asana. |
+| Review: comment | → Next | A "Comment" review from a reviewer in one of the three tiers is a rejection: they looked and did not approve. It takes the changes-requested path above, withdraws that reviewer's own earlier approval, and stands until the author re-requests them. A standalone reply in a thread also reaches GitHub as a comment review, but with no summary — that one, like a bot's or an unmapped user's comment review, only mirrors the comment to Asana. |
 | Review: approved by all tiers | → Approved | Approval cascades PEER_DEV → DEV → QA; the next tier's subtasks are created as the previous tier finishes. Only the three human tiers gate this — approvals on draft PRs, from bots, or from users missing from the user map never promote on their own. **An approval is needed only once**: it stands until its reviewer changes their own verdict or the review is explicitly dismissed — a later changes-request from someone else (bots included) never invalidates it, mirroring GitHub's own semantics. A dismissed approval no longer counts, and the cascade **re-requests that reviewer on GitHub**, so the resulting `review_requested` event re-creates their "Review" subtask and nobody is left off the hook invisibly. A standing changes-request is never resummoned — the author answers it and re-requests by hand. A conflicting PR stops the cascade dead — no tier is handed a review and nothing is promoted, because resolving the conflict writes a diff nobody has reviewed; once resolved, standing approvals count again. GitHub computes mergeability asynchronously, so a PR whose state it has not answered for yet counts as mergeable. |
 | Review: dismissed | → Testing / Review | A dismissed approval un-approves the PR, so the task cannot sit in Approved on a sign-off that no longer exists. Tasks in In Progress or Released sections stay put. |
 | Merged | → release section | `aaardvark-app` / `blinkmetrics-app`: `master` → *Released in Alpha*, `beta` → *Released in Beta*, `production` → *Released*. Every other repo: *Done*. A merge into any other branch of a staged-release repo — a stacked PR — ships nothing and moves nothing. Tasks are **never auto-completed**, and a merge **never deletes approval subtasks** — they are the record of who signed off (and who never answered), and an approval given just before an auto-merge may not have reached its subtask yet. Instead, a still-open "Review" subtask is renamed **"FYI Review"**: nobody is waiting on it now the code is in, but the reviewer can still read it. A subtask that already carries a prefix ("FYI Review", or any other "… Review") and one that has been answered are both left alone, so a repeated merge event changes nothing. A stacked merge relabels too — it ships nothing, but its reviews are just as finished. |
@@ -46,7 +46,7 @@ stateDiagram-v2
 
 ### Every event re-checks the review state
 
-The rows above each mirror one transition. After any of them runs, the action reads the PR fresh from GitHub and restates the whole review state. If the PR is open, ready for review, mergeable, its last CI verdict is not a rejection, and no changes-request stands whose reviewer has not been re-requested, then:
+The rows above each mirror one transition. After any of them runs, the action reads the PR fresh from GitHub and restates the whole review state. If the PR is open, ready for review, mergeable, its last CI verdict is not a rejection, and no changes-request (or tier reviewer's comment review) stands whose reviewer has not been re-requested, then:
 
 - every reviewer of the active tier GitHub is still waiting on gets a pending "Review" subtask and the task moves to Testing / Review;
 - once every tier has approved and GitHub waits on nobody, the task moves to Approved instead — including an approval given while the PR was conflicting, which counts as soon as the conflict is gone. An approver the author asks to review again keeps the tiers satisfied, but their fresh "Review" subtask stays pending and the task stays in Testing / Review until they answer;

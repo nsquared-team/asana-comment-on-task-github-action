@@ -363,18 +363,48 @@ describe("the CI sandbox block in the PR description", () => {
 });
 
 describe("reviews", () => {
-  test("a comment review never demotes the task", async () => {
-    mockAsana();
-    await handleReview(
-      baseEvent({
-        eventName: "pull_request_review",
-        action: "submitted",
-        reviewState: "commented",
-        reviewBody: "looks good, one thought",
-        rawCommentBody: "looks good, one thought",
-        commentUrl: "https://github.com/r/pull/42#review-1",
-      })
+  const commentReview = (overrides: Partial<SyncEvent> = {}) =>
+    baseEvent({
+      eventName: "pull_request_review",
+      action: "submitted",
+      reviewState: "commented",
+      reviewBody: "looks good, one thought",
+      rawCommentBody: "looks good, one thought",
+      commentUrl: "https://github.com/r/pull/42#review-1",
+      ...overrides,
+    });
+
+  test("a comment review from a tier reviewer is a rejection", async () => {
+    mockAsana({
+      taskSection: "Testing / Review",
+      subtasks: [
+        {
+          gid: "rev-sub-1",
+          name: "Review",
+          resource_subtype: "approval",
+          completed: false,
+          created_by: { gid: OTTO_ASANA_ID },
+          assignee: { gid: PEER.asanaId },
+        },
+      ],
+    });
+    await handleReview(commentReview({ username: PEER.githubName }));
+    expect(asanaPut).toHaveBeenCalledWith("/tasks/rev-sub-1", {
+      data: { approval_status: "changes_requested" },
+    });
+    expect(movesTo("Next")).toHaveLength(1);
+    expect(asanaPut).toHaveBeenCalledWith(
+      "/tasks/111",
+      expect.objectContaining({ data: { completed: false } })
     );
+  });
+
+  test.each([
+    ["a reply in a thread", { username: PEER.githubName, reviewBody: "" }],
+    ["a bot's comment review", { username: "otto-bot-git" }],
+  ])("%s never demotes the task", async (_label, overrides) => {
+    mockAsana({ taskSection: "Testing / Review" });
+    await handleReview(commentReview(overrides));
     expect(movesTo("Next")).toHaveLength(0);
     expect(asanaPut).not.toHaveBeenCalledWith(
       "/tasks/111",
@@ -1610,6 +1640,33 @@ describe("every event restates the review state", () => {
         submitted_at: "2026-08-02T00:00:00Z",
       },
     ]);
+    await reconcileReviewState(commentEvent);
+    expect(reviewCreates()).toHaveLength(1);
+  });
+
+  test("a tier reviewer's comment review stands as a rejection until they are re-requested", async () => {
+    const commented = [
+      {
+        user: { login: PEER.githubName },
+        state: "APPROVED",
+        submitted_at: "2026-08-01T00:00:00Z",
+      },
+      {
+        user: { login: PEER.githubName },
+        state: "COMMENTED",
+        body: "one more thing",
+        submitted_at: "2026-08-02T00:00:00Z",
+      },
+    ];
+    mockAsana({ subtasks: [ciSubtask("approved")] });
+    mockGithub(readyPr({ requested_reviewers: [] }), commented);
+    await reconcileReviewState(commentEvent);
+    expect(movesTo("Approved")).toHaveLength(0);
+    expect(reviewCreates()).toHaveLength(0);
+
+    jest.clearAllMocks();
+    mockAsana({ subtasks: [ciSubtask("approved")] });
+    mockGithub(readyPr(), commented);
     await reconcileReviewState(commentEvent);
     expect(reviewCreates()).toHaveLength(1);
   });
