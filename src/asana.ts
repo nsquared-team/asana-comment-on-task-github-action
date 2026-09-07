@@ -24,6 +24,9 @@ export const getAllPages = async (url: string) => {
   return results;
 };
 
+export const getTask = async (taskId: string) =>
+  (await asanaAxios.get(`${REQUESTS.TASKS_URL}${taskId}`)).data.data;
+
 export const moveTaskToSection = async (
   taskId: string,
   moveSection: string,
@@ -45,6 +48,9 @@ export const moveTaskToSection = async (
   }
 
   for (const membership of task.memberships) {
+    // Asana inserts at the top of the section, so restating a task's
+    // section on every event would keep reshuffling the board.
+    if (membership.section?.name === moveSection) continue;
     const projectId = membership.project.gid;
     const sectionsUrl = `${REQUESTS.PROJECTS_URL}${projectId}${REQUESTS.SECTIONS_URL}`;
     const sectionsResponse = await asanaAxios.get(sectionsUrl);

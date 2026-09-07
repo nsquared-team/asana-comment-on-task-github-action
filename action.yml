@@ -10,8 +10,8 @@ inputs:
     required: false
     default: ''
   github-pat:
-    description: 'GitHub token. Needed to fetch PR reviews (approval cascade) and to edit the PR description (edit_pr_description mode).'
-    required: false
+    description: 'GitHub token. Reads the PR and its reviews on every event (review re-check and approval cascade), re-requests a reviewer whose review was dismissed, and edits the PR description (edit_pr_description mode).'
+    required: true
     default: ''
   asana-pat:
     description: 'Asana personal access token used for all Asana API calls.'

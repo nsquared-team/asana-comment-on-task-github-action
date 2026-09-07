@@ -10,11 +10,14 @@ export interface SyncEvent {
   repoFullName: string;
   taskIds: string[];
   prNumber?: number;
+  isPullRequest: boolean;
+  prAuthor: string;
   prUrl: string;
   prState: string;
   prMerged: boolean;
   prBaseRef: string;
   isDraft: boolean;
+  reviewId?: number;
   reviewState: string;
   reviewBody: string;
   commentUrl: string;
@@ -51,11 +54,15 @@ export const buildEvent = (context: any): SyncEvent => {
     repoFullName: payload.repository?.full_name || "",
     taskIds: utils.extractAsanaTaskIds(pullRequest?.body),
     prNumber: pullRequest?.number,
+    // issue_comment also fires on plain issues, which have no PR to read.
+    isPullRequest: Boolean(payload.pull_request || payload.issue?.pull_request),
+    prAuthor: pullRequest?.user?.login || "",
     prUrl: pullRequest?.html_url || "",
     prState: pullRequest?.state || "",
     prMerged: payload.pull_request?.merged || false,
     prBaseRef: payload.pull_request?.base?.ref || "",
     isDraft: payload.pull_request?.draft || false,
+    reviewId: payload.review?.id,
     reviewState: payload.review?.state || "",
     reviewBody: payload.review?.body || "",
     commentUrl: payload.comment?.html_url || payload.review?.html_url || "",
