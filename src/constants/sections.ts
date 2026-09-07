@@ -46,6 +46,10 @@ const RELEASE_SECTION_BY_BASE: { [base: string]: string } = {
   production: RELEASED,
 };
 
+// The branches a merge actually ships to. An "FYI Review" label names one of
+// these; every other merge base is a sub-PR.
+export const RELEASE_BRANCHES = Object.keys(RELEASE_SECTION_BY_BASE);
+
 const STAGED_RELEASE_REPOS = ["aaardvark-app", "blinkmetrics-app"];
 
 // undefined means "merged, but nothing shipped" - a stacked PR landing on

@@ -16086,6 +16086,7 @@ exports.updateApprovalSubtask = exports.addRequestedReview = exports.addApproval
 const core_1 = __nccwpck_require__(7484);
 const asanaAxios_1 = __importDefault(__nccwpck_require__(5940));
 const REQUESTS = __importStar(__nccwpck_require__(4291));
+const SECTIONS = __importStar(__nccwpck_require__(6081));
 const users_1 = __nccwpck_require__(9101);
 const utils = __importStar(__nccwpck_require__(8541));
 const ottoUser = () => utils.findUserByGithubName("otto-bot-git");
@@ -16205,16 +16206,23 @@ const deleteReviewSubtasks = (taskId) => __awaiter(void 0, void 0, void 0, funct
 exports.deleteReviewSubtasks = deleteReviewSubtasks;
 // Once the PR is merged nobody is waiting on an unanswered review, but the
 // subtask still records who never answered - so it is relabelled rather than
-// deleted. Matching the bare name leaves an already-prefixed subtask ("FYI
-// Review" from an earlier merge event, or any other "... Review") untouched,
-// which is what makes a repeated merge event a no-op. getAllApprovalSubtasks
-// only returns incomplete subtasks, so an answered review keeps its name.
-const relabelReviewSubtasksAsFyi = (taskId) => __awaiter(void 0, void 0, void 0, function* () {
+// deleted. The label names the release branch the code landed on; a merge
+// into any other branch is a sub-PR whose code has not shipped. Matching the
+// bare name leaves an already-prefixed subtask ("FYI Review ..." from an
+// earlier merge event, or any other "... Review") untouched, which is what
+// makes a repeated merge event a no-op. getAllApprovalSubtasks only returns
+// incomplete subtasks, so an answered review keeps its name.
+const relabelReviewSubtasksAsFyi = (taskId, baseRef) => __awaiter(void 0, void 0, void 0, function* () {
+    const landedOn = SECTIONS.RELEASE_BRANCHES.includes(baseRef)
+        ? baseRef
+        : "sub-PR";
     const subtasks = yield (0, exports.getAllApprovalSubtasks)(taskId, (0, exports.ottoUser)());
     for (const subtask of subtasks) {
         if (subtask.name !== "Review")
             continue;
-        yield (0, exports.updateApprovalSubtask)(subtask.gid, { name: "FYI Review" });
+        yield (0, exports.updateApprovalSubtask)(subtask.gid, {
+            name: `FYI Review - merged to ${landedOn}`,
+        });
     }
 });
 exports.relabelReviewSubtasksAsFyi = relabelReviewSubtasksAsFyi;
@@ -16364,7 +16372,7 @@ exports.REVIEWERS_URL = "/requested_reviewers";
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.sectionForMerge = exports.PROTECTED_FROM_DRAFT = exports.PROTECTED_FROM_DEMOTION = exports.RELEASED_SECTIONS = exports.BLOCKED_SECTIONS = exports.SOMEDAY = exports.DONE = exports.PROMOTE_NOTIFY = exports.UPDATE_WEB_DOC = exports.RELEASED_FREE = exports.RELEASED_PAID = exports.RELEASED = exports.RELEASED_BETA = exports.RELEASED_ALPHA = exports.APPROVED = exports.TESTING_REVIEW = exports.IN_PROGRESS = exports.NEXT = exports.BLOCKED = exports.BLOCKED_WAITING = exports.BUGS = exports.SOON = exports.ROCKS = exports.NEEDS_SPEC = exports.RECURRING = exports.INBOX = void 0;
+exports.sectionForMerge = exports.RELEASE_BRANCHES = exports.PROTECTED_FROM_DRAFT = exports.PROTECTED_FROM_DEMOTION = exports.RELEASED_SECTIONS = exports.BLOCKED_SECTIONS = exports.SOMEDAY = exports.DONE = exports.PROMOTE_NOTIFY = exports.UPDATE_WEB_DOC = exports.RELEASED_FREE = exports.RELEASED_PAID = exports.RELEASED = exports.RELEASED_BETA = exports.RELEASED_ALPHA = exports.APPROVED = exports.TESTING_REVIEW = exports.IN_PROGRESS = exports.NEXT = exports.BLOCKED = exports.BLOCKED_WAITING = exports.BUGS = exports.SOON = exports.ROCKS = exports.NEEDS_SPEC = exports.RECURRING = exports.INBOX = void 0;
 exports.INBOX = "Inbox (new ideas)";
 exports.RECURRING = "Recurring";
 exports.NEEDS_SPEC = "Needs Spec";
@@ -16407,6 +16415,9 @@ const RELEASE_SECTION_BY_BASE = {
     beta: exports.RELEASED_BETA,
     production: exports.RELEASED,
 };
+// The branches a merge actually ships to. An "FYI Review" label names one of
+// these; every other merge base is a sub-PR.
+exports.RELEASE_BRANCHES = Object.keys(RELEASE_SECTION_BY_BASE);
 const STAGED_RELEASE_REPOS = ["aaardvark-app", "blinkmetrics-app"];
 // undefined means "merged, but nothing shipped" - a stacked PR landing on
 // another feature branch of a staged-release repo. Those tasks keep their
@@ -17227,7 +17238,7 @@ const handlePullRequest = (event) => __awaiter(void 0, void 0, void 0, function*
                 // The code is in, so an unanswered review is now an FYI. Relabelling
                 // ahead of the section decision is deliberate: a stacked merge ships
                 // nothing and moves nothing, but its reviews are just as finished.
-                yield asana.relabelReviewSubtasksAsFyi(taskId);
+                yield asana.relabelReviewSubtasksAsFyi(taskId, event.prBaseRef);
             }
             // A merge into a non-release branch ships nothing, so it moves nothing.
             if (!targetSection)
