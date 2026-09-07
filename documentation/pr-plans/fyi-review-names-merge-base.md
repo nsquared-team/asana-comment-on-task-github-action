@@ -6,7 +6,7 @@ A reviewer reading an "FYI Review" subtask can tell whether the merged code ship
 
 ## Definition of Done
 
-- [ ] A merge into `master`, `beta` or `production` renames a still-open "Review" subtask to "FYI Review - merged to <that branch>".
+- [ ] A merge into `main`, `master`, `beta` or `production` renames a still-open "Review" subtask to "FYI Review - merged to <that branch>".
 - [ ] A merge into any other branch renames it to "FYI Review - merged to sub-PR".
 - [ ] Everything the plain rename already left alone — prefixed, answered and CI subtasks — is still left alone, so a re-run changes nothing.
 - [ ] The README merge row states both label shapes.

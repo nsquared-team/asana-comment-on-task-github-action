@@ -1,7 +1,6 @@
 import { info } from "@actions/core";
 import asanaAxios from "./requests/asanaAxios";
 import * as REQUESTS from "./constants/requests";
-import * as SECTIONS from "./constants/sections";
 import { users } from "./constants/users";
 import * as utils from "./utils";
 
@@ -146,19 +145,19 @@ export const deleteReviewSubtasks = async (taskId: string) => {
 
 // Once the PR is merged nobody is waiting on an unanswered review, but the
 // subtask still records who never answered - so it is relabelled rather than
-// deleted. The label names the release branch the code landed on; a merge
+// deleted. The label names the mainline branch the code landed on; a merge
 // into any other branch is a sub-PR whose code has not shipped. Matching the
 // bare name leaves an already-prefixed subtask ("FYI Review ..." from an
 // earlier merge event, or any other "... Review") untouched, which is what
 // makes a repeated merge event a no-op. getAllApprovalSubtasks only returns
 // incomplete subtasks, so an answered review keeps its name.
+const NAMED_MERGE_BASES = ["main", "master", "beta", "production"];
+
 export const relabelReviewSubtasksAsFyi = async (
   taskId: string,
   baseRef: string
 ) => {
-  const landedOn = SECTIONS.RELEASE_BRANCHES.includes(baseRef)
-    ? baseRef
-    : "sub-PR";
+  const landedOn = NAMED_MERGE_BASES.includes(baseRef) ? baseRef : "sub-PR";
   const subtasks = await getAllApprovalSubtasks(taskId, ottoUser());
   for (const subtask of subtasks) {
     if (subtask.name !== "Review") continue;

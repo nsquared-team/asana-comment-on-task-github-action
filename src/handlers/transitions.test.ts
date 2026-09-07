@@ -1226,8 +1226,8 @@ describe("a merge turns the open reviews into FYI reviews", () => {
     expect(asanaDelete).not.toHaveBeenCalled();
   });
 
-  test.each(["beta", "production"])(
-    "the label names the release branch the code landed on: %s",
+  test.each(["main", "beta", "production"])(
+    "the label names the mainline branch the code landed on: %s",
     async (base) => {
       mockAsanaWithEverySubtaskShape();
       await handlePullRequest(closed(true, base));
