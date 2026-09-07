@@ -17185,7 +17185,6 @@ const HANDLED_ACTIONS = [
     "converted_to_draft",
     "ready_for_review",
     "review_requested",
-    "review_request_removed",
     "closed",
 ];
 const handlePullRequest = (event) => __awaiter(void 0, void 0, void 0, function* () {
@@ -17226,22 +17225,6 @@ const handlePullRequest = (event) => __awaiter(void 0, void 0, void 0, function*
                 activeTier.some((reviewer) => reviewer.githubName === event.eventReviewer.githubName)) {
                 yield asana.addRequestedReview(taskId, event.eventReviewer, event.prUrl);
             }
-        }
-        return;
-    }
-    // Nobody is waiting on a reviewer taken off the PR, so their pending
-    // subtask goes. Only theirs: the re-check that follows decides who is
-    // active now. A team request carries no reviewer and is left alone.
-    if (event.action === "review_request_removed") {
-        if (!event.eventReviewer)
-            return;
-        for (const taskId of event.taskIds) {
-            const subtasks = yield asana.getAllApprovalSubtasks(taskId, asana.ottoUser());
-            yield asana.deleteApprovalTasks(subtasks.filter((subtask) => {
-                var _a;
-                return subtask.name === "Review" &&
-                    ((_a = subtask.assignee) === null || _a === void 0 ? void 0 : _a.gid) === event.eventReviewer.asanaId;
-            }));
         }
         return;
     }
@@ -17437,31 +17420,24 @@ const tallyReviews = (reviews, requestedReviewers, author, threadOpeners) => {
     }
     return latestReviews;
 };
-// A dismissed approval blocks its tier, but nothing summons its reviewer
+// A dismissed review blocks its tier, but nothing summons its reviewer
 // back: they are no longer in requested_reviewers and their old subtask is
-// answered - so nobody re-requests them by hand and the cascade deadlocks
-// silently. Re-requesting their review here fires review_requested, whose
-// handler re-creates the "Review" subtask once their tier is active - the
-// same single path every other summons takes. A standing changes-request
-// is deliberately not resummoned: the author answers it and re-requests.
-// (The tally already replaced anyone still requested with PENDING, so this
-// only reaches reviewers nobody has re-requested.)
-const resummonDismissedReviewers = (githubUrl, latestReviews) => __awaiter(void 0, void 0, void 0, function* () {
-    for (const githubName of Object.keys(latestReviews)) {
-        const review = latestReviews[githubName];
-        if (review.state !== "DISMISSED")
-            continue;
-        if (!utils.isReviewTier(review.info))
-            continue;
-        try {
-            yield githubAxios_1.default.post(`${githubUrl}${REQUESTS.REVIEWERS_URL}`, {
-                reviewers: [githubName],
-            });
-        }
-        catch (error) {
-            // One unreachable reviewer must not stall the tally or the sync.
-            console.warn(`Failed to re-request a review from ${githubName}:`, error);
-        }
+// answered - so nobody re-requests them by hand and the tally deadlocks
+// silently. The dismissal re-requests them, which fires review_requested,
+// whose handler re-creates the "Review" subtask once their tier is active -
+// the same single path every other summons takes. Once, from the dismissal
+// only: GitHub reports every dismissed review as DISMISSED whatever it was,
+// so re-requesting from the tally would summon the reviewer back on every
+// event, even after the author took them off the PR on purpose.
+const rerequestReviewer = (githubUrl, githubName) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        yield githubAxios_1.default.post(`${githubUrl}${REQUESTS.REVIEWERS_URL}`, {
+            reviewers: [githubName],
+        });
+    }
+    catch (error) {
+        // One unreachable reviewer must not stall the sync.
+        console.warn(`Failed to re-request a review from ${githubName}:`, error);
     }
 });
 // Only the three human tiers gate the cascade. Bots review every PR here,
@@ -17521,7 +17497,6 @@ const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, funct
         .data;
     const threadOpeners = yield findThreadOpeners(githubUrl, reviews, author);
     const latestReviews = tallyReviews(reviews, event.requestedReviewers, author, threadOpeners);
-    yield resummonDismissedReviewers(githubUrl, latestReviews);
     const { approvedByPeer, approvedByDev, approvedByQa, fullyApproved } = tierVerdict(latestReviews);
     const devReviewers = event.requestedReviewers.filter((reviewer) => reviewer.team === "DEV");
     const qaReviewers = event.requestedReviewers.filter((reviewer) => reviewer.team === "QA");
@@ -17579,10 +17554,15 @@ const handleReview = (event) => __awaiter(void 0, void 0, void 0, function* () {
         }
     }
     // A dismissed approval un-approves the PR, so the task cannot stay in
-    // Approved waiting on a sign-off that no longer exists.
+    // Approved waiting on a sign-off that no longer exists. Its reviewer is
+    // summoned back here, unless someone already re-requested them by hand.
     if (event.action === "dismissed" && !event.isDraft) {
         for (const taskId of event.taskIds) {
             yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, SECTIONS.PROTECTED_FROM_DEMOTION);
+        }
+        const alreadyRequested = event.requestedReviewers.some((requested) => requested.githubName === event.username);
+        if (reviewer && utils.isReviewTier(reviewer) && !alreadyRequested) {
+            yield rerequestReviewer(pullRequestUrl(event), reviewer.githubName);
         }
     }
     // The ready-for-review invariant extends to approvals: reviews submitted
@@ -17671,9 +17651,6 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
     if (changesRequestStands)
         return;
     const latestReviews = tallyReviews(reviews, requestedReviewers, author, threadOpeners);
-    // Summoned back the moment the dismissal syncs, not only when someone
-    // else happens to approve later.
-    yield resummonDismissedReviewers(githubUrl, latestReviews);
     const { fullyApproved } = tierVerdict(latestReviews);
     // An approver asked again keeps their approval in the tally, but GitHub
     // is waiting on them: their fresh Review subtask stays pending.
