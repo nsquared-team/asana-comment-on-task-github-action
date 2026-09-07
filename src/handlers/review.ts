@@ -121,31 +121,23 @@ const tallyReviews = (
   return latestReviews;
 };
 
-// A dismissed approval blocks its tier, but nothing summons its reviewer
+// A dismissed review blocks its tier, but nothing summons its reviewer
 // back: they are no longer in requested_reviewers and their old subtask is
-// answered - so nobody re-requests them by hand and the cascade deadlocks
-// silently. Re-requesting their review here fires review_requested, whose
-// handler re-creates the "Review" subtask once their tier is active - the
-// same single path every other summons takes. A standing changes-request
-// is deliberately not resummoned: the author answers it and re-requests.
-// (The tally already replaced anyone still requested with PENDING, so this
-// only reaches reviewers nobody has re-requested.)
-const resummonDismissedReviewers = async (
-  githubUrl: string,
-  latestReviews: { [githubName: string]: any }
-) => {
-  for (const githubName of Object.keys(latestReviews)) {
-    const review = latestReviews[githubName];
-    if (review.state !== "DISMISSED") continue;
-    if (!utils.isReviewTier(review.info)) continue;
-    try {
-      await githubAxios.post(`${githubUrl}${REQUESTS.REVIEWERS_URL}`, {
-        reviewers: [githubName],
-      });
-    } catch (error) {
-      // One unreachable reviewer must not stall the tally or the sync.
-      console.warn(`Failed to re-request a review from ${githubName}:`, error);
-    }
+// answered - so nobody re-requests them by hand and the tally deadlocks
+// silently. The dismissal re-requests them, which fires review_requested,
+// whose handler re-creates the "Review" subtask once their tier is active -
+// the same single path every other summons takes. Once, from the dismissal
+// only: GitHub reports every dismissed review as DISMISSED whatever it was,
+// so re-requesting from the tally would summon the reviewer back on every
+// event, even after the author took them off the PR on purpose.
+const rerequestReviewer = async (githubUrl: string, githubName: string) => {
+  try {
+    await githubAxios.post(`${githubUrl}${REQUESTS.REVIEWERS_URL}`, {
+      reviewers: [githubName],
+    });
+  } catch (error) {
+    // One unreachable reviewer must not stall the sync.
+    console.warn(`Failed to re-request a review from ${githubName}:`, error);
   }
 };
 
@@ -214,7 +206,6 @@ const handleApprovalCascade = async (event: SyncEvent) => {
     author,
     threadOpeners
   );
-  await resummonDismissedReviewers(githubUrl, latestReviews);
   const { approvedByPeer, approvedByDev, approvedByQa, fullyApproved } =
     tierVerdict(latestReviews);
 
@@ -303,7 +294,8 @@ export const handleReview = async (event: SyncEvent) => {
   }
 
   // A dismissed approval un-approves the PR, so the task cannot stay in
-  // Approved waiting on a sign-off that no longer exists.
+  // Approved waiting on a sign-off that no longer exists. Its reviewer is
+  // summoned back here, unless someone already re-requested them by hand.
   if (event.action === "dismissed" && !event.isDraft) {
     for (const taskId of event.taskIds) {
       await asana.moveTaskToSection(
@@ -311,6 +303,12 @@ export const handleReview = async (event: SyncEvent) => {
         SECTIONS.TESTING_REVIEW,
         SECTIONS.PROTECTED_FROM_DEMOTION
       );
+    }
+    const alreadyRequested = event.requestedReviewers.some(
+      (requested: any) => requested.githubName === event.username
+    );
+    if (reviewer && utils.isReviewTier(reviewer) && !alreadyRequested) {
+      await rerequestReviewer(pullRequestUrl(event), reviewer.githubName);
     }
   }
 
@@ -411,9 +409,6 @@ export const reconcileReviewState = async (event: SyncEvent) => {
     author,
     threadOpeners
   );
-  // Summoned back the moment the dismissal syncs, not only when someone
-  // else happens to approve later.
-  await resummonDismissedReviewers(githubUrl, latestReviews);
   const { fullyApproved } = tierVerdict(latestReviews);
   // An approver asked again keeps their approval in the tally, but GitHub
   // is waiting on them: their fresh Review subtask stays pending.

@@ -31,7 +31,6 @@ const HANDLED_ACTIONS = [
   "converted_to_draft",
   "ready_for_review",
   "review_requested",
-  "review_request_removed",
   "closed",
 ];
 
@@ -83,27 +82,6 @@ export const handlePullRequest = async (event: SyncEvent) => {
           event.prUrl
         );
       }
-    }
-    return;
-  }
-
-  // Nobody is waiting on a reviewer taken off the PR, so their pending
-  // subtask goes. Only theirs: the re-check that follows decides who is
-  // active now. A team request carries no reviewer and is left alone.
-  if (event.action === "review_request_removed") {
-    if (!event.eventReviewer) return;
-    for (const taskId of event.taskIds) {
-      const subtasks = await asana.getAllApprovalSubtasks(
-        taskId,
-        asana.ottoUser()
-      );
-      await asana.deleteApprovalTasks(
-        subtasks.filter(
-          (subtask: any) =>
-            subtask.name === "Review" &&
-            subtask.assignee?.gid === event.eventReviewer.asanaId
-        )
-      );
     }
     return;
   }

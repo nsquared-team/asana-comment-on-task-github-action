@@ -918,7 +918,7 @@ describe("dismissed reviews", () => {
   });
 });
 
-describe("a blocked tier resummons its reviewer", () => {
+describe("a dismissed review summons its reviewer back", () => {
   const HSEIN = { githubName: "hsein-bitar", team: "PEER_DEV" };
   const rerequests = () =>
     githubPost.mock.calls.filter(([url]: [string]) =>
@@ -929,6 +929,14 @@ describe("a blocked tier resummons its reviewer", () => {
       eventName: "pull_request_review",
       action: "submitted",
       reviewState: "approved",
+      username: login,
+      commentUrl: `https://github.com/o/r/pull/42#review-${login}`,
+    });
+  const dismissalOf = (login: string) =>
+    baseEvent({
+      eventName: "pull_request_review",
+      action: "dismissed",
+      reviewState: "dismissed",
       username: login,
       commentUrl: `https://github.com/o/r/pull/42#review-${login}`,
     });
@@ -960,96 +968,59 @@ describe("a blocked tier resummons its reviewer", () => {
     expect(movesTo("Approved")).toHaveLength(1);
   });
 
-  test("a dismissed approval resummons its reviewer", async () => {
+  test("the dismissal re-requests the reviewer", async () => {
     mockAsana();
-    githubGet.mockResolvedValue({
-      data: [
-        {
-          user: { login: HSEIN.githubName },
-          state: "DISMISSED",
-          submitted_at: "2026-08-01T00:00:00Z",
-        },
-        {
-          user: { login: PEER.githubName },
-          state: "APPROVED",
-          submitted_at: "2026-08-01T01:00:00Z",
-        },
-      ],
-    });
-    await handleReview(approvalBy(PEER.githubName));
+    await handleReview(dismissalOf(HSEIN.githubName));
     expect(rerequests()).toHaveLength(1);
     expect(rerequests()[0][1]).toEqual({ reviewers: [HSEIN.githubName] });
   });
 
   test("a reviewer already re-requested by hand is not requested again", async () => {
     mockAsana();
-    githubGet.mockResolvedValue({
-      data: [
-        {
-          user: { login: HSEIN.githubName },
-          state: "DISMISSED",
-          submitted_at: "2026-08-01T00:00:00Z",
-        },
-        {
-          user: { login: PEER.githubName },
-          state: "APPROVED",
-          submitted_at: "2026-08-01T01:00:00Z",
-        },
-      ],
-    });
     await handleReview({
-      ...approvalBy(PEER.githubName),
+      ...dismissalOf(HSEIN.githubName),
       requestedReviewers: [HSEIN],
     });
     expect(rerequests()).toHaveLength(0);
   });
 
-  test("a bot's dismissed review and a standing changes-request are never resummoned", async () => {
+  test("a bot's dismissed review is never resummoned", async () => {
+    mockAsana();
+    await handleReview(dismissalOf("otto-bot-git"));
+    expect(rerequests()).toHaveLength(0);
+  });
+
+  // GitHub reports every dismissed review as DISMISSED, so a tally that
+  // resummoned would drag back a reviewer the author took off on purpose.
+  test("a later approval does not summon a dismissed reviewer again", async () => {
     mockAsana();
     githubGet.mockResolvedValue({
       data: [
         {
-          user: { login: "otto-bot-git" },
+          user: { login: HSEIN.githubName },
           state: "DISMISSED",
           submitted_at: "2026-08-01T00:00:00Z",
         },
         {
-          user: { login: HSEIN.githubName },
-          state: "CHANGES_REQUESTED",
-          submitted_at: "2026-08-01T01:00:00Z",
-        },
-        {
           user: { login: PEER.githubName },
           state: "APPROVED",
-          submitted_at: "2026-08-01T02:00:00Z",
+          submitted_at: "2026-08-01T01:00:00Z",
         },
       ],
     });
     await handleReview(approvalBy(PEER.githubName));
     expect(rerequests()).toHaveLength(0);
+    // The dismissed verdict still blocks the tier.
+    expect(movesTo("Approved")).toHaveLength(0);
   });
 
   test("a failed re-request call neither throws nor stops the rest of the sync", async () => {
     mockAsana();
     githubPost.mockRejectedValue(new Error("boom"));
-    githubGet.mockResolvedValue({
-      data: [
-        {
-          user: { login: HSEIN.githubName },
-          state: "DISMISSED",
-          submitted_at: "2026-08-01T00:00:00Z",
-        },
-        {
-          user: { login: PEER.githubName },
-          state: "APPROVED",
-          submitted_at: "2026-08-01T01:00:00Z",
-        },
-      ],
-    });
     await expect(
-      handleReview(approvalBy(PEER.githubName))
+      handleReview(dismissalOf(HSEIN.githubName))
     ).resolves.not.toThrow();
-    // The follower sync after the cascade still runs after the failed call.
+    // The follower sync after the dismissal still runs after the failed call.
     const followerAdds = asanaPost.mock.calls.filter(([url]: [string]) =>
       url.includes("/addFollowers")
     );
@@ -1887,70 +1858,13 @@ describe("every event restates the review state", () => {
     expect(movesTo("Testing / Review")).toHaveLength(1);
   });
 
-  test("a dismissed reviewer is re-requested by the re-check itself", async () => {
+  test("a dismissed reviewer is not summoned again by the re-check", async () => {
     mockAsana();
     mockGithub(readyPr({ requested_reviewers: [] }), [
       { ...peerApproved, state: "DISMISSED" },
     ]);
     await reconcileReviewState(commentEvent);
-    expect(githubPost).toHaveBeenCalledWith(
-      "/repos/nsquared-team/some-repo/pulls/42/requested_reviewers",
-      { reviewers: [PEER.githubName] }
-    );
+    expect(githubPost).not.toHaveBeenCalled();
     expect(movesTo("Approved")).toHaveLength(0);
-  });
-});
-
-describe("a reviewer taken off the pull request", () => {
-  const DEV = {
-    githubName: "NatalieMac",
-    asanaId: "1208102635655720",
-    team: "DEV",
-  };
-  const pending = (gid: string, assignee: string) => ({
-    gid,
-    name: "Review",
-    resource_subtype: "approval",
-    completed: false,
-    created_by: { gid: OTTO_ASANA_ID },
-    assignee: { gid: assignee },
-  });
-
-  test("loses only their own pending Review subtask", async () => {
-    mockAsana({
-      subtasks: [
-        pending("peer-sub", PEER.asanaId),
-        pending("dev-sub", DEV.asanaId),
-      ],
-    });
-    await handlePullRequest(
-      baseEvent({
-        action: "review_request_removed",
-        eventReviewer: PEER,
-        requestedReviewers: [DEV],
-      })
-    );
-    expect(asanaDelete).toHaveBeenCalledWith("/tasks/peer-sub");
-    expect(asanaDelete).not.toHaveBeenCalledWith("/tasks/dev-sub");
-  });
-
-  test("an approval subtask somebody else assigned to that reviewer survives", async () => {
-    mockAsana({
-      subtasks: [
-        { ...pending("human-sub", PEER.asanaId), created_by: { gid: "human" } },
-      ],
-    });
-    await handlePullRequest(
-      baseEvent({ action: "review_request_removed", eventReviewer: PEER })
-    );
-    expect(asanaDelete).not.toHaveBeenCalled();
-  });
-
-  test("a team request removed carries no reviewer and deletes nothing", async () => {
-    mockAsana({ subtasks: [pending("peer-sub", PEER.asanaId)] });
-    await handlePullRequest(
-      baseEvent({ action: "review_request_removed", eventReviewer: undefined })
-    );
-    expect(asanaDelete).not.toHaveBeenCalled();
   });
 });

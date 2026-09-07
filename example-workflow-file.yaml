@@ -14,7 +14,6 @@ on:
         ready_for_review,
         converted_to_draft,
         review_requested,
-        review_request_removed,
       ]
   pull_request_review:
     types: [submitted, dismissed]
