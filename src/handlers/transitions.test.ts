@@ -1201,8 +1201,8 @@ describe("a merge turns the open reviews into FYI reviews", () => {
     });
 
   const renames = () =>
-    asanaPut.mock.calls.filter(
-      ([, payload]: [string, any]) => payload?.data?.name === "FYI Review"
+    asanaPut.mock.calls.filter(([, payload]: [string, any]) =>
+      payload?.data?.name?.startsWith("FYI Review")
     );
 
   const closed = (prMerged: boolean, prBaseRef = "master") =>
@@ -1218,10 +1218,27 @@ describe("a merge turns the open reviews into FYI reviews", () => {
     mockAsanaWithEverySubtaskShape();
     await handlePullRequest(closed(true));
     expect(renames()).toEqual([
-      ["/tasks/open-review", { data: { name: "FYI Review" } }],
+      [
+        "/tasks/open-review",
+        { data: { name: "FYI Review - merged to master" } },
+      ],
     ]);
     expect(asanaDelete).not.toHaveBeenCalled();
   });
+
+  test.each(["main", "beta", "production"])(
+    "the label names the mainline branch the code landed on: %s",
+    async (base) => {
+      mockAsanaWithEverySubtaskShape();
+      await handlePullRequest(closed(true, base));
+      expect(renames()).toEqual([
+        [
+          "/tasks/open-review",
+          { data: { name: `FYI Review - merged to ${base}` } },
+        ],
+      ]);
+    }
+  );
 
   test("a stacked merge relabels even though it moves the task nowhere", async () => {
     mockAsanaWithEverySubtaskShape();
@@ -1230,7 +1247,12 @@ describe("a merge turns the open reviews into FYI reviews", () => {
       url.includes("/addTask")
     );
     expect(sectionMoves).toHaveLength(0);
-    expect(renames()).toHaveLength(1);
+    expect(renames()).toEqual([
+      [
+        "/tasks/open-review",
+        { data: { name: "FYI Review - merged to sub-PR" } },
+      ],
+    ]);
   });
 
   test("a PR closed without merging still deletes the subtasks instead", async () => {
