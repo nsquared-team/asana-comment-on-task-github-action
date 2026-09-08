@@ -1414,6 +1414,49 @@ describe("a merge turns the open reviews into FYI reviews", () => {
     expect(asanaDelete).toHaveBeenCalledWith("/tasks/fyi-newer");
   });
 
+  // Asana shows a created subtask to the next read; the shared mock does not,
+  // so the cascade cleanup that runs after a create is invisible without this.
+  const mockAsanaWithCreatesVisible = (subtasks: any[]) => {
+    mockAsana({ subtasks });
+    asanaPost.mockImplementation((url: string, payload: any) => {
+      if (url.includes("/subtasks"))
+        subtasks.push(
+          approvalSubtask({
+            gid: "created-fyi",
+            name: payload.data.name,
+            assignee: { gid: payload.data.assignee },
+          })
+        );
+      return Promise.resolve({ status: 201, data: {} });
+    });
+  };
+
+  test("a merge that creates an FYI still deletes no approval subtask", async () => {
+    mockAsanaWithCreatesVisible([
+      approvalSubtask({
+        gid: "qa-review",
+        name: "Review",
+        assignee: { gid: QA.asanaId },
+      }),
+    ]);
+    await handlePullRequest(
+      closed(true, "master", { requestedReviewers: [PEER] })
+    );
+    expect(fyiCreates()).toHaveLength(1);
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+
+  test("the FYI a merge creates survives the run that created it", async () => {
+    mockAsanaWithCreatesVisible([
+      approvalSubtask({ gid: "peer-review", name: "Review" }),
+    ]);
+    await handlePullRequest(
+      closed(true, "master", { requestedReviewers: [QA] })
+    );
+    expect(fyiCreates()).toHaveLength(1);
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+
   test("a PR closed without merging creates none", async () => {
     mockAsana();
     await handlePullRequest(

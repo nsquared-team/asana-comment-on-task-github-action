@@ -227,12 +227,17 @@ export const cleanupApprovalTasks = async (taskId: string) => {
   }
 };
 
+// cascadeCleanup drops the subtasks of the tiers the cascade has moved past,
+// which is right while the reviews are live and wrong once the PR is merged:
+// there every subtask is the record of who answered and who never did, so a
+// merge deletes none of them.
 export const addApprovalTask = async (
   taskId: string,
   assignee: any,
   taskName: string,
   approvalStatus: string,
-  notes: string
+  notes: string,
+  cascadeCleanup = true
 ) => {
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
@@ -248,7 +253,7 @@ export const addApprovalTask = async (
       html_notes: `<body>${notes}</body>`,
     },
   });
-  await cleanupApprovalTasks(taskId);
+  if (cascadeCleanup) await cleanupApprovalTasks(taskId);
 };
 
 const createdBefore = (a: any, b: any) => {
@@ -316,7 +321,8 @@ export const addFyiReviews = async (
         reviewer,
         fyiReviewName(baseRef),
         "pending",
-        notes
+        notes,
+        false
       );
     }
     // Same race as a requested review: a parallel run can create its own copy

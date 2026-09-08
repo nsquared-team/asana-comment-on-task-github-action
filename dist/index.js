@@ -16254,7 +16254,11 @@ const cleanupApprovalTasks = (taskId) => __awaiter(void 0, void 0, void 0, funct
     }
 });
 exports.cleanupApprovalTasks = cleanupApprovalTasks;
-const addApprovalTask = (taskId, assignee, taskName, approvalStatus, notes) => __awaiter(void 0, void 0, void 0, function* () {
+// cascadeCleanup drops the subtasks of the tiers the cascade has moved past,
+// which is right while the reviews are live and wrong once the PR is merged:
+// there every subtask is the record of who answered and who never did, so a
+// merge deletes none of them.
+const addApprovalTask = (taskId, assignee, taskName, approvalStatus, notes, cascadeCleanup = true) => __awaiter(void 0, void 0, void 0, function* () {
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     yield asanaAxios_1.default.post(`${REQUESTS.TASKS_URL}${taskId}/subtasks`, {
@@ -16268,7 +16272,8 @@ const addApprovalTask = (taskId, assignee, taskName, approvalStatus, notes) => _
             html_notes: `<body>${notes}</body>`,
         },
     });
-    yield (0, exports.cleanupApprovalTasks)(taskId);
+    if (cascadeCleanup)
+        yield (0, exports.cleanupApprovalTasks)(taskId);
 });
 exports.addApprovalTask = addApprovalTask;
 const createdBefore = (a, b) => {
@@ -16315,7 +16320,7 @@ const addFyiReviews = (taskId, reviewers, baseRef, pullRequestUrl) => __awaiter(
         const existing = yield (0, exports.getApprovalSubtask)(taskId, undefined, reviewer);
         if (!existing) {
             const notes = `<a href='${pullRequestUrl}'> Merged - nobody is waiting on you </a>`;
-            yield (0, exports.addApprovalTask)(taskId, reviewer, fyiReviewName(baseRef), "pending", notes);
+            yield (0, exports.addApprovalTask)(taskId, reviewer, fyiReviewName(baseRef), "pending", notes, false);
         }
         // Same race as a requested review: a parallel run can create its own copy
         // between the check above and this create becoming visible. Runs on the
