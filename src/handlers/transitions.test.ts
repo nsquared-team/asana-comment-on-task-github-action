@@ -646,7 +646,7 @@ describe("merge mapping", () => {
     expect(asanaDelete).not.toHaveBeenCalled();
   });
 
-  test("a merge deletes no approval subtasks, answered or pending", async () => {
+  test("a merge with no duplicate to converge deletes no approval subtask", async () => {
     // The pending subtask stands in for an approval given just before an
     // auto-merge: the review event that mirrors it onto the subtask runs in
     // a parallel workflow run, so at merge time it can still read as pending.
@@ -1265,14 +1265,26 @@ describe("a merge turns the open reviews into FYI reviews", () => {
       payload?.data?.name?.startsWith("FYI Review")
     );
 
-  const closed = (prMerged: boolean, prBaseRef = "master") =>
+  const closed = (
+    prMerged: boolean,
+    prBaseRef = "master",
+    overrides: Partial<SyncEvent> = {}
+  ) =>
     baseEvent({
       action: "closed",
       prMerged,
       prState: "closed",
       repoFullName: "nsquared-team/aaardvark-app",
       prBaseRef,
+      ...overrides,
     });
+
+  const fyiCreates = () =>
+    asanaPost.mock.calls.filter(
+      ([url, payload]: [string, any]) =>
+        url.includes("/tasks/111/subtasks") &&
+        payload?.data?.name?.startsWith("FYI Review")
+    );
 
   test("only the open, unprefixed Review subtask is relabelled", async () => {
     mockAsanaWithEverySubtaskShape();
@@ -1320,6 +1332,140 @@ describe("a merge turns the open reviews into FYI reviews", () => {
     await handlePullRequest(closed(false));
     expect(renames()).toHaveLength(0);
     expect(asanaDelete).toHaveBeenCalledWith("/tasks/open-review");
+  });
+
+  test("a requested reviewer the task carries no subtask for gets one created", async () => {
+    mockAsana();
+    await handlePullRequest(
+      closed(true, "master", { requestedReviewers: [PEER] })
+    );
+    expect(fyiCreates()).toHaveLength(1);
+    expect(fyiCreates()[0][1].data).toMatchObject({
+      name: "FYI Review - merged to master",
+      assignee: PEER.asanaId,
+      approval_status: "pending",
+      completed: false,
+    });
+  });
+
+  test("the created subtask names the sub-PR the code landed on", async () => {
+    mockAsana();
+    await handlePullRequest(
+      closed(true, "feature-parent", { requestedReviewers: [PEER] })
+    );
+    expect(fyiCreates()[0][1].data.name).toBe("FYI Review - merged to sub-PR");
+  });
+
+  test("a reviewer whose subtask this merge just relabelled is not given a second", async () => {
+    mockAsanaWithEverySubtaskShape();
+    await handlePullRequest(
+      closed(true, "master", { requestedReviewers: [PEER] })
+    );
+    expect(renames()).toHaveLength(1);
+    expect(fyiCreates()).toHaveLength(0);
+    // The same reviewer already carries a bare "FYI Review" here, so the two
+    // open reviews converge on the older one rather than both standing.
+    expect(asanaDelete.mock.calls).toEqual([["/tasks/open-review"]]);
+  });
+
+  test("a reviewer who already answered is not given a second", async () => {
+    mockAsana({
+      subtasks: [
+        approvalSubtask({
+          gid: "answered-review",
+          name: "Review",
+          completed: true,
+        }),
+      ],
+    });
+    await handlePullRequest(
+      closed(true, "master", { requestedReviewers: [PEER] })
+    );
+    expect(renames()).toHaveLength(0);
+    expect(fyiCreates()).toHaveLength(0);
+  });
+
+  test("only the active tier gets one, not every requested reviewer", async () => {
+    mockAsana();
+    await handlePullRequest(
+      closed(true, "master", { requestedReviewers: [PEER, QA] })
+    );
+    expect(fyiCreates()).toHaveLength(1);
+    expect(fyiCreates()[0][1].data.assignee).toBe(PEER.asanaId);
+  });
+
+  test("a reviewer already carrying a duplicate pair is healed by the merge", async () => {
+    mockAsana({
+      subtasks: [
+        approvalSubtask({
+          gid: "review-older",
+          name: "Review",
+          created_at: "2026-09-02T21:02:19.100Z",
+        }),
+        approvalSubtask({
+          gid: "fyi-newer",
+          name: "FYI Review - merged to master",
+          created_at: "2026-09-02T21:02:19.400Z",
+        }),
+      ],
+    });
+    await handlePullRequest(
+      closed(true, "master", { requestedReviewers: [PEER] })
+    );
+    expect(fyiCreates()).toHaveLength(0);
+    expect(asanaDelete).toHaveBeenCalledTimes(1);
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/fyi-newer");
+  });
+
+  // Asana shows a created subtask to the next read; the shared mock does not,
+  // so the cascade cleanup that runs after a create is invisible without this.
+  const mockAsanaWithCreatesVisible = (subtasks: any[]) => {
+    mockAsana({ subtasks });
+    asanaPost.mockImplementation((url: string, payload: any) => {
+      if (url.includes("/subtasks"))
+        subtasks.push(
+          approvalSubtask({
+            gid: "created-fyi",
+            name: payload.data.name,
+            assignee: { gid: payload.data.assignee },
+          })
+        );
+      return Promise.resolve({ status: 201, data: {} });
+    });
+  };
+
+  test("a merge that creates an FYI still deletes no approval subtask", async () => {
+    mockAsanaWithCreatesVisible([
+      approvalSubtask({
+        gid: "qa-review",
+        name: "Review",
+        assignee: { gid: QA.asanaId },
+      }),
+    ]);
+    await handlePullRequest(
+      closed(true, "master", { requestedReviewers: [PEER] })
+    );
+    expect(fyiCreates()).toHaveLength(1);
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+
+  test("the FYI a merge creates survives the run that created it", async () => {
+    mockAsanaWithCreatesVisible([
+      approvalSubtask({ gid: "peer-review", name: "Review" }),
+    ]);
+    await handlePullRequest(
+      closed(true, "master", { requestedReviewers: [QA] })
+    );
+    expect(fyiCreates()).toHaveLength(1);
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+
+  test("a PR closed without merging creates none", async () => {
+    mockAsana();
+    await handlePullRequest(
+      closed(false, "master", { requestedReviewers: [PEER] })
+    );
+    expect(fyiCreates()).toHaveLength(0);
   });
 });
 
@@ -1473,6 +1619,23 @@ describe("overlapping runs leave one Review subtask per reviewer", () => {
     expect(subtaskCreates).toHaveLength(0);
     expect(asanaDelete).toHaveBeenCalledTimes(1);
     expect(asanaDelete).toHaveBeenCalledWith("/tasks/review-newer");
+  });
+
+  test("a Review and the FYI Review it became converge on one", async () => {
+    mockAsana({
+      subtasks: [
+        reviewFor("review-older", "2026-09-02T21:02:19.100Z"),
+        {
+          ...reviewFor("fyi-newer", "2026-09-02T21:02:19.400Z"),
+          name: "FYI Review - merged to master",
+        },
+      ],
+    });
+    await handlePullRequest(
+      baseEvent({ action: "ready_for_review", requestedReviewers: [PEER] })
+    );
+    expect(asanaDelete).toHaveBeenCalledTimes(1);
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/fyi-newer");
   });
 
   test("a run with no rival deletes nothing", async () => {

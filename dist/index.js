@@ -16082,7 +16082,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.updateApprovalSubtask = exports.addRequestedReview = exports.addApprovalTask = exports.cleanupApprovalTasks = exports.relabelReviewSubtasksAsFyi = exports.deleteReviewSubtasks = exports.deleteApprovalTasks = exports.getApprovalSubtask = exports.getAllApprovalSubtasks = exports.getStories = exports.addFollowers = exports.setTaskIncomplete = exports.moveTaskToSection = exports.getTask = exports.getAllPages = exports.ottoUser = void 0;
+exports.updateApprovalSubtask = exports.addFyiReviews = exports.addRequestedReview = exports.addApprovalTask = exports.cleanupApprovalTasks = exports.relabelReviewSubtasksAsFyi = exports.deleteReviewSubtasks = exports.deleteApprovalTasks = exports.getApprovalSubtask = exports.getAllApprovalSubtasks = exports.getStories = exports.addFollowers = exports.setTaskIncomplete = exports.moveTaskToSection = exports.getTask = exports.getAllPages = exports.ottoUser = void 0;
 const core_1 = __nccwpck_require__(7484);
 const asanaAxios_1 = __importDefault(__nccwpck_require__(5940));
 const REQUESTS = __importStar(__nccwpck_require__(4291));
@@ -16175,11 +16175,15 @@ const getAllApprovalSubtasks = (taskId, creator) => __awaiter(void 0, void 0, vo
         subtask.created_by.gid === (creator === null || creator === void 0 ? void 0 : creator.asanaId));
 });
 exports.getAllApprovalSubtasks = getAllApprovalSubtasks;
+// An undefined `isComplete` matches an approval subtask in whatever state it
+// is in. Asking whether a reviewer already has one has to span both: answering
+// a review completes its subtask, so an incomplete-only look would report the
+// reviewer as empty-handed moments after they signed off.
 const getApprovalSubtask = (taskId, isComplete, assignee) => __awaiter(void 0, void 0, void 0, function* () {
     const url = `${REQUESTS.TASKS_URL}${taskId}${REQUESTS.SUBTASKS_URL}`;
     const subtasks = yield (0, exports.getAllPages)(url);
     return subtasks.find((subtask) => subtask.resource_subtype === "approval" &&
-        subtask.completed === isComplete &&
+        (isComplete === undefined || subtask.completed === isComplete) &&
         subtask.assignee &&
         subtask.assignee.gid === (assignee === null || assignee === void 0 ? void 0 : assignee.asanaId));
 });
@@ -16219,15 +16223,13 @@ exports.deleteReviewSubtasks = deleteReviewSubtasks;
 // makes a repeated merge event a no-op. getAllApprovalSubtasks only returns
 // incomplete subtasks, so an answered review keeps its name.
 const NAMED_MERGE_BASES = ["main", "master", "beta", "production"];
+const fyiReviewName = (baseRef) => `FYI Review - merged to ${NAMED_MERGE_BASES.includes(baseRef) ? baseRef : "sub-PR"}`;
 const relabelReviewSubtasksAsFyi = (taskId, baseRef) => __awaiter(void 0, void 0, void 0, function* () {
-    const landedOn = NAMED_MERGE_BASES.includes(baseRef) ? baseRef : "sub-PR";
     const subtasks = yield (0, exports.getAllApprovalSubtasks)(taskId, (0, exports.ottoUser)());
     for (const subtask of subtasks) {
         if (subtask.name !== "Review")
             continue;
-        yield (0, exports.updateApprovalSubtask)(subtask.gid, {
-            name: `FYI Review - merged to ${landedOn}`,
-        });
+        yield (0, exports.updateApprovalSubtask)(subtask.gid, { name: fyiReviewName(baseRef) });
     }
 });
 exports.relabelReviewSubtasksAsFyi = relabelReviewSubtasksAsFyi;
@@ -16252,7 +16254,11 @@ const cleanupApprovalTasks = (taskId) => __awaiter(void 0, void 0, void 0, funct
     }
 });
 exports.cleanupApprovalTasks = cleanupApprovalTasks;
-const addApprovalTask = (taskId, assignee, taskName, approvalStatus, notes) => __awaiter(void 0, void 0, void 0, function* () {
+// cascadeCleanup drops the subtasks of the tiers the cascade has moved past,
+// which is right while the reviews are live and wrong once the PR is merged:
+// there every subtask is the record of who answered and who never did, so a
+// merge deletes none of them.
+const addApprovalTask = (taskId, assignee, taskName, approvalStatus, notes, cascadeCleanup = true) => __awaiter(void 0, void 0, void 0, function* () {
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     yield asanaAxios_1.default.post(`${REQUESTS.TASKS_URL}${taskId}/subtasks`, {
@@ -16266,7 +16272,8 @@ const addApprovalTask = (taskId, assignee, taskName, approvalStatus, notes) => _
             html_notes: `<body>${notes}</body>`,
         },
     });
-    yield (0, exports.cleanupApprovalTasks)(taskId);
+    if (cascadeCleanup)
+        yield (0, exports.cleanupApprovalTasks)(taskId);
 });
 exports.addApprovalTask = addApprovalTask;
 const createdBefore = (a, b) => {
@@ -16274,17 +16281,19 @@ const createdBefore = (a, b) => {
         return a.created_at < b.created_at ? -1 : 1;
     return a.gid.length - b.gid.length || (a.gid < b.gid ? -1 : 1);
 };
+const isReviewSubtask = (subtask) => { var _a; return subtask.name === "Review" || Boolean((_a = subtask.name) === null || _a === void 0 ? void 0 : _a.startsWith("FYI Review")); };
 // Asana enforces no uniqueness on subtasks, and two sync runs for one PR
 // routinely overlap (ready_for_review and review_requested land in the same
 // second), so both pass the existence check in addRequestedReview before
 // either create is visible. Re-reading after the create and keeping only the
-// oldest pending "Review" per assignee makes the racers converge: each sees
-// the same set and picks the same survivor, and a delete that loses the race
-// 404s and is skipped.
+// oldest pending review per assignee makes the racers converge: each sees the
+// same set and picks the same survivor, and a delete that loses the race 404s
+// and is skipped. It counts both names a review goes by, because the racing
+// run may be the merge that renames it.
 const deleteDuplicateReviewSubtasks = (taskId, reviewer) => __awaiter(void 0, void 0, void 0, function* () {
     const subtasks = yield (0, exports.getAllApprovalSubtasks)(taskId, (0, exports.ottoUser)());
     const reviews = subtasks
-        .filter((subtask) => { var _a; return subtask.name === "Review" && ((_a = subtask.assignee) === null || _a === void 0 ? void 0 : _a.gid) === (reviewer === null || reviewer === void 0 ? void 0 : reviewer.asanaId); })
+        .filter((subtask) => { var _a; return isReviewSubtask(subtask) && ((_a = subtask.assignee) === null || _a === void 0 ? void 0 : _a.gid) === (reviewer === null || reviewer === void 0 ? void 0 : reviewer.asanaId); })
         .sort(createdBefore);
     yield (0, exports.deleteApprovalTasks)(reviews.slice(1));
 });
@@ -16299,6 +16308,28 @@ const addRequestedReview = (taskId, reviewer, pullRequestUrl) => __awaiter(void 
     yield deleteDuplicateReviewSubtasks(taskId, reviewer);
 });
 exports.addRequestedReview = addRequestedReview;
+// Relabelling only ever reached reviewers the task already carried a subtask
+// for. When it carries none - the task was linked to the PR after the reviews
+// were requested, or the PR merged before the request reached Asana - the
+// reviewer heard nothing at all. Creating the missing one here means a merge
+// leaves the same record either way.
+const addFyiReviews = (taskId, reviewers, baseRef, pullRequestUrl) => __awaiter(void 0, void 0, void 0, function* () {
+    for (const reviewer of reviewers) {
+        // Any approval subtask counts, in any state: one this merge just
+        // relabelled, one still pending, or one the reviewer already answered.
+        const existing = yield (0, exports.getApprovalSubtask)(taskId, undefined, reviewer);
+        if (!existing) {
+            const notes = `<a href='${pullRequestUrl}'> Merged - nobody is waiting on you </a>`;
+            yield (0, exports.addApprovalTask)(taskId, reviewer, fyiReviewName(baseRef), "pending", notes, false);
+        }
+        // Same race as a requested review: a parallel run can create its own copy
+        // between the check above and this create becoming visible. Runs on the
+        // existing path too, so the merge heals a "Review" and the "FYI Review" a
+        // racing run made of it instead of leaving the pair standing.
+        yield deleteDuplicateReviewSubtasks(taskId, reviewer);
+    }
+});
+exports.addFyiReviews = addFyiReviews;
 const updateApprovalSubtask = (subtaskGid, fields) => __awaiter(void 0, void 0, void 0, function* () {
     yield asanaAxios_1.default.put(`${REQUESTS.TASKS_URL}${subtaskGid}`, {
         data: fields,
@@ -17246,7 +17277,10 @@ const handlePullRequest = (event) => __awaiter(void 0, void 0, void 0, function*
                 // The code is in, so an unanswered review is now an FYI. Relabelling
                 // ahead of the section decision is deliberate: a stacked merge ships
                 // nothing and moves nothing, but its reviews are just as finished.
+                // The create guards on the reviewer, not on the subtask name, so a
+                // reviewer is skipped whether or not the relabel renamed theirs.
                 yield asana.relabelReviewSubtasksAsFyi(taskId, event.prBaseRef);
+                yield asana.addFyiReviews(taskId, activeTier, event.prBaseRef, event.prUrl);
             }
             // A merge into a non-release branch ships nothing, so it moves nothing.
             if (!targetSection)
