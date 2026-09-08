@@ -646,7 +646,7 @@ describe("merge mapping", () => {
     expect(asanaDelete).not.toHaveBeenCalled();
   });
 
-  test("a merge deletes no approval subtasks, answered or pending", async () => {
+  test("a merge with no duplicate to converge deletes no approval subtask", async () => {
     // The pending subtask stands in for an approval given just before an
     // auto-merge: the review event that mirrors it onto the subtask runs in
     // a parallel workflow run, so at merge time it can still read as pending.
