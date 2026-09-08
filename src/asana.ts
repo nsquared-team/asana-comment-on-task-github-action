@@ -257,16 +257,17 @@ const createdBefore = (a: any, b: any) => {
   return a.gid.length - b.gid.length || (a.gid < b.gid ? -1 : 1);
 };
 
+const isReviewSubtask = (subtask: any) =>
+  subtask.name === "Review" || Boolean(subtask.name?.startsWith("FYI Review"));
+
 // Asana enforces no uniqueness on subtasks, and two sync runs for one PR
 // routinely overlap (ready_for_review and review_requested land in the same
 // second), so both pass the existence check in addRequestedReview before
 // either create is visible. Re-reading after the create and keeping only the
-// oldest pending "Review" per assignee makes the racers converge: each sees
-// the same set and picks the same survivor, and a delete that loses the race
-// 404s and is skipped.
-const isReviewSubtask = (subtask: any) =>
-  subtask.name === "Review" || Boolean(subtask.name?.startsWith("FYI Review"));
-
+// oldest pending review per assignee makes the racers converge: each sees the
+// same set and picks the same survivor, and a delete that loses the race 404s
+// and is skipped. It counts both names a review goes by, because the racing
+// run may be the merge that renames it.
 const deleteDuplicateReviewSubtasks = async (taskId: string, reviewer: any) => {
   const subtasks = await getAllApprovalSubtasks(taskId, ottoUser());
   const reviews = subtasks
