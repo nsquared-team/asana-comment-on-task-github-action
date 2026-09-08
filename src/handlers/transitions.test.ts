@@ -1391,6 +1391,29 @@ describe("a merge turns the open reviews into FYI reviews", () => {
     expect(fyiCreates()[0][1].data.assignee).toBe(PEER.asanaId);
   });
 
+  test("a reviewer already carrying a duplicate pair is healed by the merge", async () => {
+    mockAsana({
+      subtasks: [
+        approvalSubtask({
+          gid: "review-older",
+          name: "Review",
+          created_at: "2026-09-02T21:02:19.100Z",
+        }),
+        approvalSubtask({
+          gid: "fyi-newer",
+          name: "FYI Review - merged to master",
+          created_at: "2026-09-02T21:02:19.400Z",
+        }),
+      ],
+    });
+    await handlePullRequest(
+      closed(true, "master", { requestedReviewers: [PEER] })
+    );
+    expect(fyiCreates()).toHaveLength(0);
+    expect(asanaDelete).toHaveBeenCalledTimes(1);
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/fyi-newer");
+  });
+
   test("a PR closed without merging creates none", async () => {
     mockAsana();
     await handlePullRequest(

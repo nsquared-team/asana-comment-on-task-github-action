@@ -16312,12 +16312,15 @@ const addFyiReviews = (taskId, reviewers, baseRef, pullRequestUrl) => __awaiter(
     for (const reviewer of reviewers) {
         // Any approval subtask counts, in any state: one this merge just
         // relabelled, one still pending, or one the reviewer already answered.
-        if (yield (0, exports.getApprovalSubtask)(taskId, undefined, reviewer))
-            continue;
-        const notes = `<a href='${pullRequestUrl}'> Merged - nobody is waiting on you </a>`;
-        yield (0, exports.addApprovalTask)(taskId, reviewer, fyiReviewName(baseRef), "pending", notes);
+        const existing = yield (0, exports.getApprovalSubtask)(taskId, undefined, reviewer);
+        if (!existing) {
+            const notes = `<a href='${pullRequestUrl}'> Merged - nobody is waiting on you </a>`;
+            yield (0, exports.addApprovalTask)(taskId, reviewer, fyiReviewName(baseRef), "pending", notes);
+        }
         // Same race as a requested review: a parallel run can create its own copy
-        // between the check above and this create becoming visible.
+        // between the check above and this create becoming visible. Runs on the
+        // existing path too, so the merge heals a "Review" and the "FYI Review" a
+        // racing run made of it instead of leaving the pair standing.
         yield deleteDuplicateReviewSubtasks(taskId, reviewer);
     }
 });
