@@ -17272,8 +17272,8 @@ const handlePullRequest = (event) => __awaiter(void 0, void 0, void 0, function*
                 // The code is in, so an unanswered review is now an FYI. Relabelling
                 // ahead of the section decision is deliberate: a stacked merge ships
                 // nothing and moves nothing, but its reviews are just as finished.
-                // Relabel first so a reviewer whose subtask was just renamed is
-                // already accounted for and does not get a second one created.
+                // The create guards on the reviewer, not on the subtask name, so a
+                // reviewer is skipped whether or not the relabel renamed theirs.
                 yield asana.relabelReviewSubtasksAsFyi(taskId, event.prBaseRef);
                 yield asana.addFyiReviews(taskId, activeTier, event.prBaseRef, event.prUrl);
             }
