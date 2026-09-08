@@ -107,7 +107,15 @@ export const handlePullRequest = async (event: SyncEvent) => {
         // The code is in, so an unanswered review is now an FYI. Relabelling
         // ahead of the section decision is deliberate: a stacked merge ships
         // nothing and moves nothing, but its reviews are just as finished.
+        // Relabel first so a reviewer whose subtask was just renamed is
+        // already accounted for and does not get a second one created.
         await asana.relabelReviewSubtasksAsFyi(taskId, event.prBaseRef);
+        await asana.addFyiReviews(
+          taskId,
+          activeTier,
+          event.prBaseRef,
+          event.prUrl
+        );
       }
       // A merge into a non-release branch ships nothing, so it moves nothing.
       if (!targetSection) continue;

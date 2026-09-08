@@ -1265,14 +1265,26 @@ describe("a merge turns the open reviews into FYI reviews", () => {
       payload?.data?.name?.startsWith("FYI Review")
     );
 
-  const closed = (prMerged: boolean, prBaseRef = "master") =>
+  const closed = (
+    prMerged: boolean,
+    prBaseRef = "master",
+    overrides: Partial<SyncEvent> = {}
+  ) =>
     baseEvent({
       action: "closed",
       prMerged,
       prState: "closed",
       repoFullName: "nsquared-team/aaardvark-app",
       prBaseRef,
+      ...overrides,
     });
+
+  const fyiCreates = () =>
+    asanaPost.mock.calls.filter(
+      ([url, payload]: [string, any]) =>
+        url.includes("/tasks/111/subtasks") &&
+        payload?.data?.name?.startsWith("FYI Review")
+    );
 
   test("only the open, unprefixed Review subtask is relabelled", async () => {
     mockAsanaWithEverySubtaskShape();
@@ -1320,6 +1332,71 @@ describe("a merge turns the open reviews into FYI reviews", () => {
     await handlePullRequest(closed(false));
     expect(renames()).toHaveLength(0);
     expect(asanaDelete).toHaveBeenCalledWith("/tasks/open-review");
+  });
+
+  test("a requested reviewer the task carries no subtask for gets one created", async () => {
+    mockAsana();
+    await handlePullRequest(
+      closed(true, "master", { requestedReviewers: [PEER] })
+    );
+    expect(fyiCreates()).toHaveLength(1);
+    expect(fyiCreates()[0][1].data).toMatchObject({
+      name: "FYI Review - merged to master",
+      assignee: PEER.asanaId,
+      approval_status: "pending",
+      completed: false,
+    });
+  });
+
+  test("the created subtask names the sub-PR the code landed on", async () => {
+    mockAsana();
+    await handlePullRequest(
+      closed(true, "feature-parent", { requestedReviewers: [PEER] })
+    );
+    expect(fyiCreates()[0][1].data.name).toBe("FYI Review - merged to sub-PR");
+  });
+
+  test("a reviewer whose subtask this merge just relabelled is not given a second", async () => {
+    mockAsanaWithEverySubtaskShape();
+    await handlePullRequest(
+      closed(true, "master", { requestedReviewers: [PEER] })
+    );
+    expect(renames()).toHaveLength(1);
+    expect(fyiCreates()).toHaveLength(0);
+  });
+
+  test("a reviewer who already answered is not given a second", async () => {
+    mockAsana({
+      subtasks: [
+        approvalSubtask({
+          gid: "answered-review",
+          name: "Review",
+          completed: true,
+        }),
+      ],
+    });
+    await handlePullRequest(
+      closed(true, "master", { requestedReviewers: [PEER] })
+    );
+    expect(renames()).toHaveLength(0);
+    expect(fyiCreates()).toHaveLength(0);
+  });
+
+  test("only the active tier gets one, not every requested reviewer", async () => {
+    mockAsana();
+    await handlePullRequest(
+      closed(true, "master", { requestedReviewers: [PEER, QA] })
+    );
+    expect(fyiCreates()).toHaveLength(1);
+    expect(fyiCreates()[0][1].data.assignee).toBe(PEER.asanaId);
+  });
+
+  test("a PR closed without merging creates none", async () => {
+    mockAsana();
+    await handlePullRequest(
+      closed(false, "master", { requestedReviewers: [PEER] })
+    );
+    expect(fyiCreates()).toHaveLength(0);
   });
 });
 
@@ -1473,6 +1550,23 @@ describe("overlapping runs leave one Review subtask per reviewer", () => {
     expect(subtaskCreates).toHaveLength(0);
     expect(asanaDelete).toHaveBeenCalledTimes(1);
     expect(asanaDelete).toHaveBeenCalledWith("/tasks/review-newer");
+  });
+
+  test("a Review and the FYI Review it became converge on one", async () => {
+    mockAsana({
+      subtasks: [
+        reviewFor("review-older", "2026-09-02T21:02:19.100Z"),
+        {
+          ...reviewFor("fyi-newer", "2026-09-02T21:02:19.400Z"),
+          name: "FYI Review - merged to master",
+        },
+      ],
+    });
+    await handlePullRequest(
+      baseEvent({ action: "ready_for_review", requestedReviewers: [PEER] })
+    );
+    expect(asanaDelete).toHaveBeenCalledTimes(1);
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/fyi-newer");
   });
 
   test("a run with no rival deletes nothing", async () => {

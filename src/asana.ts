@@ -107,9 +107,13 @@ export const getAllApprovalSubtasks = async (taskId: string, creator: any) => {
   );
 };
 
+// An undefined `isComplete` matches an approval subtask in whatever state it
+// is in. Asking whether a reviewer already has one has to span both: answering
+// a review completes its subtask, so an incomplete-only look would report the
+// reviewer as empty-handed moments after they signed off.
 export const getApprovalSubtask = async (
   taskId: string,
-  isComplete: boolean,
+  isComplete: boolean | undefined,
   assignee: any
 ) => {
   const url = `${REQUESTS.TASKS_URL}${taskId}${REQUESTS.SUBTASKS_URL}`;
@@ -117,7 +121,7 @@ export const getApprovalSubtask = async (
   return subtasks.find(
     (subtask: any) =>
       subtask.resource_subtype === "approval" &&
-      subtask.completed === isComplete &&
+      (isComplete === undefined || subtask.completed === isComplete) &&
       subtask.assignee &&
       subtask.assignee.gid === assignee?.asanaId
   );
@@ -159,17 +163,19 @@ export const deleteReviewSubtasks = async (taskId: string) => {
 // incomplete subtasks, so an answered review keeps its name.
 const NAMED_MERGE_BASES = ["main", "master", "beta", "production"];
 
+const fyiReviewName = (baseRef: string) =>
+  `FYI Review - merged to ${
+    NAMED_MERGE_BASES.includes(baseRef) ? baseRef : "sub-PR"
+  }`;
+
 export const relabelReviewSubtasksAsFyi = async (
   taskId: string,
   baseRef: string
 ) => {
-  const landedOn = NAMED_MERGE_BASES.includes(baseRef) ? baseRef : "sub-PR";
   const subtasks = await getAllApprovalSubtasks(taskId, ottoUser());
   for (const subtask of subtasks) {
     if (subtask.name !== "Review") continue;
-    await updateApprovalSubtask(subtask.gid, {
-      name: `FYI Review - merged to ${landedOn}`,
-    });
+    await updateApprovalSubtask(subtask.gid, { name: fyiReviewName(baseRef) });
   }
 };
 
@@ -258,12 +264,15 @@ const createdBefore = (a: any, b: any) => {
 // oldest pending "Review" per assignee makes the racers converge: each sees
 // the same set and picks the same survivor, and a delete that loses the race
 // 404s and is skipped.
+const isReviewSubtask = (subtask: any) =>
+  subtask.name === "Review" || Boolean(subtask.name?.startsWith("FYI Review"));
+
 const deleteDuplicateReviewSubtasks = async (taskId: string, reviewer: any) => {
   const subtasks = await getAllApprovalSubtasks(taskId, ottoUser());
   const reviews = subtasks
     .filter(
       (subtask: any) =>
-        subtask.name === "Review" && subtask.assignee?.gid === reviewer?.asanaId
+        isReviewSubtask(subtask) && subtask.assignee?.gid === reviewer?.asanaId
     )
     .sort(createdBefore);
   await deleteApprovalTasks(reviews.slice(1));
@@ -282,6 +291,35 @@ export const addRequestedReview = async (
   // Runs on the existing path too, so a task that already carries a
   // duplicate pair heals on the next event that touches the reviewer.
   await deleteDuplicateReviewSubtasks(taskId, reviewer);
+};
+
+// Relabelling only ever reached reviewers the task already carried a subtask
+// for. When it carries none - the task was linked to the PR after the reviews
+// were requested, or the PR merged before the request reached Asana - the
+// reviewer heard nothing at all. Creating the missing one here means a merge
+// leaves the same record either way.
+export const addFyiReviews = async (
+  taskId: string,
+  reviewers: any[],
+  baseRef: string,
+  pullRequestUrl: string
+) => {
+  for (const reviewer of reviewers) {
+    // Any approval subtask counts, in any state: one this merge just
+    // relabelled, one still pending, or one the reviewer already answered.
+    if (await getApprovalSubtask(taskId, undefined, reviewer)) continue;
+    const notes = `<a href='${pullRequestUrl}'> Merged - nobody is waiting on you </a>`;
+    await addApprovalTask(
+      taskId,
+      reviewer,
+      fyiReviewName(baseRef),
+      "pending",
+      notes
+    );
+    // Same race as a requested review: a parallel run can create its own copy
+    // between the check above and this create becoming visible.
+    await deleteDuplicateReviewSubtasks(taskId, reviewer);
+  }
 };
 
 export const updateApprovalSubtask = async (
