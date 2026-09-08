@@ -1363,6 +1363,9 @@ describe("a merge turns the open reviews into FYI reviews", () => {
     );
     expect(renames()).toHaveLength(1);
     expect(fyiCreates()).toHaveLength(0);
+    // The same reviewer already carries a bare "FYI Review" here, so the two
+    // open reviews converge on the older one rather than both standing.
+    expect(asanaDelete.mock.calls).toEqual([["/tasks/open-review"]]);
   });
 
   test("a reviewer who already answered is not given a second", async () => {
