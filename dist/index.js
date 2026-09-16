@@ -17765,7 +17765,6 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
         yield asana.syncBlockingReviewTitles(taskId);
         if (fullyApproved) {
             yield asana.moveTaskToSection(taskId, SECTIONS.APPROVED, leaveAlone);
-            yield asana.syncBlockingReviewTitles(taskId);
             continue;
         }
         if (!activeTier.length)

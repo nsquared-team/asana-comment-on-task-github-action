@@ -453,7 +453,6 @@ export const reconcileReviewState = async (event: SyncEvent) => {
 
     if (fullyApproved) {
       await asana.moveTaskToSection(taskId, SECTIONS.APPROVED, leaveAlone);
-      await asana.syncBlockingReviewTitles(taskId);
       continue;
     }
     if (!activeTier.length) continue;
