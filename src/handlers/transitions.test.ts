@@ -2031,3 +2031,145 @@ describe("every event restates the review state", () => {
     expect(movesTo("Approved")).toHaveLength(0);
   });
 });
+
+describe("the last pending review says it is blocking", () => {
+  const QA2 = {
+    githubName: "cynhu92",
+    asanaId: "1200161861602258",
+    team: "QA",
+  };
+
+  const pendingReview = (gid: string, assigneeGid: string, name = "Review") => ({
+    gid,
+    name,
+    resource_subtype: "approval",
+    completed: false,
+    created_by: { gid: OTTO_ASANA_ID },
+    assignee: { gid: assigneeGid },
+    created_at: "2026-09-02T21:02:19.100Z",
+  });
+
+  const ciSubtask = {
+    gid: "ci-1",
+    name: "Automated CI Testing",
+    resource_subtype: "approval",
+    completed: false,
+    created_by: { gid: OTTO_ASANA_ID },
+    assignee: { gid: OTTO_ASANA_ID },
+    created_at: "2026-09-02T21:02:19.100Z",
+  };
+
+  const renames = () =>
+    asanaPut.mock.calls.filter(([, body]: [string, any]) => body?.data?.name);
+
+  const renameOf = (gid: string) =>
+    renames().find(([url]: [string]) => url === `/tasks/${gid}`);
+
+  const approvalBy = (githubName: string) =>
+    baseEvent({
+      eventName: "pull_request_review",
+      action: "submitted",
+      reviewState: "approved",
+      username: githubName,
+      reviewBody: "looks good",
+      commentUrl: "https://github.com/o/r/pull/42#review-b1",
+    });
+
+  test("the one reviewer left holding the PR is retitled Blocking Review", async () => {
+    // QA2 already answered, so only QA's subtask is still pending.
+    mockAsana({ subtasks: [pendingReview("review-qa", QA.asanaId)] });
+    githubGet.mockResolvedValue({ data: [] });
+
+    await handleReview(approvalBy(QA2.githubName));
+
+    expect(renameOf("review-qa")?.[1].data.name).toBe("Blocking Review");
+  });
+
+  test("two reviewers still outstanding are both left as Review", async () => {
+    mockAsana({
+      subtasks: [
+        pendingReview("review-qa", QA.asanaId),
+        pendingReview("review-qa2", QA2.asanaId),
+      ],
+    });
+    githubGet.mockResolvedValue({ data: [] });
+
+    await handleReview(approvalBy(PEER.githubName));
+
+    expect(renames()).toHaveLength(0);
+  });
+
+  test("a subtask stops being blocking once a dismissal puts someone back", async () => {
+    // The dismissal restored QA2's review, so the title QA carries is stale.
+    mockAsana({
+      subtasks: [
+        pendingReview("review-qa", QA.asanaId, "Blocking Review"),
+        pendingReview("review-qa2", QA2.asanaId),
+      ],
+    });
+    githubGet.mockResolvedValue({ data: [] });
+
+    await handleReview(approvalBy(PEER.githubName));
+
+    expect(renameOf("review-qa")?.[1].data.name).toBe("Review");
+  });
+
+  test("the CI subtask is never counted and never retitled", async () => {
+    mockAsana({
+      subtasks: [pendingReview("review-qa", QA.asanaId), ciSubtask],
+    });
+    githubGet.mockResolvedValue({ data: [] });
+
+    await handleReview(approvalBy(QA2.githubName));
+
+    // The CI subtask sitting alongside it does not stop the lone review from
+    // being the blocker, and is not itself renamed.
+    expect(renameOf("review-qa")?.[1].data.name).toBe("Blocking Review");
+    expect(renameOf("ci-1")).toBeUndefined();
+  });
+
+  test("an FYI review left by a merge is not counted and not retitled", async () => {
+    mockAsana({
+      subtasks: [
+        pendingReview("review-qa", QA.asanaId),
+        pendingReview("fyi-1", QA2.asanaId, "FYI Review - merged to master"),
+      ],
+    });
+    githubGet.mockResolvedValue({ data: [] });
+
+    await handleReview(approvalBy(PEER.githubName));
+
+    expect(renameOf("review-qa")?.[1].data.name).toBe("Blocking Review");
+    expect(renameOf("fyi-1")).toBeUndefined();
+  });
+
+  test("a title already correct is not rewritten", async () => {
+    mockAsana({
+      subtasks: [pendingReview("review-qa", QA.asanaId, "Blocking Review")],
+    });
+    githubGet.mockResolvedValue({ data: [] });
+
+    await handleReview(approvalBy(QA2.githubName));
+
+    expect(renames()).toHaveLength(0);
+  });
+
+  test("a merge relabels a blocking review as FYI like any other", async () => {
+    mockAsana({
+      subtasks: [pendingReview("review-qa", QA.asanaId, "Blocking Review")],
+    });
+
+    await handlePullRequest(
+      baseEvent({
+        action: "closed",
+        prMerged: true,
+        prState: "closed",
+        prBaseRef: "master",
+      })
+    );
+
+    expect(renameOf("review-qa")?.[1].data.name).toBe(
+      "FYI Review - merged to master"
+    );
+  });
+});

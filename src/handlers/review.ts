@@ -277,6 +277,12 @@ export const handleReview = async (event: SyncEvent) => {
           approval_status: verdict,
         });
       }
+      // Answering a review drops it out of the pending set without adding or
+      // removing a subtask, so this is the one change to the set that the
+      // add and delete helpers cannot notice on their own. Left to them, the
+      // commonest case of all - one of two reviewers signing off, leaving a
+      // single reviewer holding the PR - would never retitle anything.
+      await asana.syncBlockingReviewTitles(taskId);
     }
   }
 
@@ -433,7 +439,7 @@ export const reconcileReviewState = async (event: SyncEvent) => {
     // answer. GitHub's verdict wins.
     for (const subtask of await asana.getAllApprovalSubtasks(taskId, otto)) {
       if (
-        subtask.name === "Review" &&
+        asana.isPendingReviewSubtask(subtask) &&
         approvedAsanaIds.includes(subtask.assignee?.gid)
       ) {
         await asana.updateApprovalSubtask(subtask.gid, {
@@ -441,9 +447,13 @@ export const reconcileReviewState = async (event: SyncEvent) => {
         });
       }
     }
+    // Answering verdicts in bulk shrinks the pending set the same way a
+    // single review does, and for the same reason needs saying so here.
+    await asana.syncBlockingReviewTitles(taskId);
 
     if (fullyApproved) {
       await asana.moveTaskToSection(taskId, SECTIONS.APPROVED, leaveAlone);
+      await asana.syncBlockingReviewTitles(taskId);
       continue;
     }
     if (!activeTier.length) continue;
