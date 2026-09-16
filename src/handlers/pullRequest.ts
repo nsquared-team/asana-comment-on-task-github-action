@@ -19,9 +19,7 @@ const moveTasksToInProgress = async (event: SyncEvent) => {
 const moveTasksToReview = async (event: SyncEvent, activeTier: any[]) => {
   for (const taskId of event.taskIds) {
     await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
-    for (const reviewer of activeTier) {
-      await asana.addRequestedReview(taskId, reviewer, event.prUrl);
-    }
+    await asana.addRequestedReviews(taskId, activeTier, event.prUrl);
   }
 };
 
@@ -76,9 +74,9 @@ export const handlePullRequest = async (event: SyncEvent) => {
             reviewer.githubName === event.eventReviewer.githubName
         )
       ) {
-        await asana.addRequestedReview(
+        await asana.addRequestedReviews(
           taskId,
-          event.eventReviewer,
+          [event.eventReviewer],
           event.prUrl
         );
       }

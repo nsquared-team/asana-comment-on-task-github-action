@@ -219,20 +219,16 @@ const handleApprovalCascade = async (event: SyncEvent) => {
   const followers: string[] = [];
 
   if (approvedByPeer && !approvedByDev) {
-    for (const reviewer of devReviewers) {
-      followers.push(reviewer.asanaId);
-      for (const taskId of event.taskIds) {
-        await asana.addRequestedReview(taskId, reviewer, event.prUrl);
-      }
+    for (const reviewer of devReviewers) followers.push(reviewer.asanaId);
+    for (const taskId of event.taskIds) {
+      await asana.addRequestedReviews(taskId, devReviewers, event.prUrl);
     }
   }
 
   if (approvedByPeer && approvedByDev && !approvedByQa) {
-    for (const reviewer of qaReviewers) {
-      followers.push(reviewer.asanaId);
-      for (const taskId of event.taskIds) {
-        await asana.addRequestedReview(taskId, reviewer, event.prUrl);
-      }
+    for (const reviewer of qaReviewers) followers.push(reviewer.asanaId);
+    for (const taskId of event.taskIds) {
+      await asana.addRequestedReviews(taskId, qaReviewers, event.prUrl);
     }
   }
 
@@ -277,12 +273,14 @@ export const handleReview = async (event: SyncEvent) => {
           approval_status: verdict,
         });
       }
-      // Answering a review drops it out of the pending set without adding or
-      // removing a subtask, so this is the one change to the set that the
-      // add and delete helpers cannot notice on their own. Left to them, the
+      // Answering a review drops it out of the pending set without adding a
+      // subtask, so the add helper cannot see it; left to that helper, the
       // commonest case of all - one of two reviewers signing off, leaving a
-      // single reviewer holding the PR - would never retitle anything.
-      await asana.syncBlockingReviewTitles(taskId);
+      // single reviewer holding the PR - would never retitle anything. Only
+      // an approval leaves a pending subtask to retitle: a changes-request
+      // clears the whole set just below, and naming a blocker here only to
+      // delete it would notify the reviewer of a title that never mattered.
+      if (verdict === "approved") await asana.syncBlockingReviewTitles(taskId);
     }
   }
 
@@ -457,8 +455,6 @@ export const reconcileReviewState = async (event: SyncEvent) => {
     }
     if (!activeTier.length) continue;
     await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, leaveAlone);
-    for (const reviewer of activeTier) {
-      await asana.addRequestedReview(taskId, reviewer, event.prUrl);
-    }
+    await asana.addRequestedReviews(taskId, activeTier, event.prUrl);
   }
 };

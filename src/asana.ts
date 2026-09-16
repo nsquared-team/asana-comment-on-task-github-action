@@ -162,11 +162,12 @@ export const isPendingReviewSubtask = (subtask: any) =>
 // well as shrinks: a dismissed approval puts its reviewer back in the queue,
 // and a subtask still claiming to be the final blocker would be telling its
 // assignee the PR is waiting on them alone when it is not. Recomputing keeps
-// the name honest in both directions. It hangs off the two functions that
-// add and remove reviews rather than off their callers, so a handler cannot
-// change the set and forget to ask for the titles to be brought back in line.
-// Only the two pending names are touched, so the CI subtask and the FYI
-// labels a merge leaves behind are never retitled.
+// the name honest in both directions. It runs once after a batch of reviews
+// is added and once after a review is answered - never after each single
+// change - so a run that summons two reviewers does not name the first one
+// the last blocker on its way to creating the second. Only the two pending
+// names are touched, so the CI subtask and the FYI labels a merge leaves
+// behind are never retitled.
 export const syncBlockingReviewTitles = async (taskId: string) => {
   const subtasks = await getAllApprovalSubtasks(taskId, ottoUser());
   const pendingReviews = subtasks.filter(isPendingReviewSubtask);
@@ -188,7 +189,6 @@ export const deleteReviewSubtasks = async (taskId: string) => {
     (subtask: any) => subtask.name !== CI_SUBTASK_NAME
   );
   await deleteApprovalTasks(reviewSubtasks);
-  await syncBlockingReviewTitles(taskId);
 };
 
 // Once the PR is merged nobody is waiting on an unanswered review, but the
@@ -325,19 +325,25 @@ const deleteDuplicateReviewSubtasks = async (taskId: string, reviewer: any) => {
   await deleteApprovalTasks(reviews.slice(1));
 };
 
-export const addRequestedReview = async (
+// Takes the whole batch so the blocking title is settled once, after every
+// reviewer is in: settling it per reviewer named the first one the last
+// blocker and then took it back. Nothing added means nothing to retitle.
+export const addRequestedReviews = async (
   taskId: string,
-  reviewer: any,
+  reviewers: any[],
   pullRequestUrl: string
 ) => {
-  const existing = await getApprovalSubtask(taskId, false, reviewer);
-  if (!existing) {
-    const notes = `<a href='${pullRequestUrl}'> Click Here To Start Your Review </a>`;
-    await addApprovalTask(taskId, reviewer, REVIEW_NAME, "pending", notes);
+  if (!reviewers.length) return;
+  for (const reviewer of reviewers) {
+    const existing = await getApprovalSubtask(taskId, false, reviewer);
+    if (!existing) {
+      const notes = `<a href='${pullRequestUrl}'> Click Here To Start Your Review </a>`;
+      await addApprovalTask(taskId, reviewer, REVIEW_NAME, "pending", notes);
+    }
+    // Runs on the existing path too, so a task that already carries a
+    // duplicate pair heals on the next event that touches the reviewer.
+    await deleteDuplicateReviewSubtasks(taskId, reviewer);
   }
-  // Runs on the existing path too, so a task that already carries a
-  // duplicate pair heals on the next event that touches the reviewer.
-  await deleteDuplicateReviewSubtasks(taskId, reviewer);
   await syncBlockingReviewTitles(taskId);
 };
 
