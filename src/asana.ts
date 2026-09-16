@@ -341,7 +341,6 @@ export const addRequestedReview = async (
   await syncBlockingReviewTitles(taskId);
 };
 
-
 // Relabelling only ever reached reviewers the task already carried a subtask
 // for. When it carries none - the task was linked to the PR after the reviews
 // were requested, or the PR merged before the request reached Asana - the

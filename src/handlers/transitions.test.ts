@@ -2039,7 +2039,11 @@ describe("the last pending review says it is blocking", () => {
     team: "QA",
   };
 
-  const pendingReview = (gid: string, assigneeGid: string, name = "Review") => ({
+  const pendingReview = (
+    gid: string,
+    assigneeGid: string,
+    name = "Review"
+  ) => ({
     gid,
     name,
     resource_subtype: "approval",
