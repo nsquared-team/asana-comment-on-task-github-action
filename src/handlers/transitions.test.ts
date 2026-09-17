@@ -118,6 +118,7 @@ const baseEvent = (overrides: Partial<SyncEvent> = {}): SyncEvent => ({
   prBaseRef: "main",
   isDraft: false,
   reviewState: "",
+  reviewSubmittedAt: "",
   reviewBody: "",
   commentUrl: "",
   rawCommentBody: "",
@@ -1735,12 +1736,6 @@ describe("every event restates the review state", () => {
     created_at: at,
   });
 
-  const reviewedOnTimeline = (login: string, at: string) => ({
-    event: "reviewed",
-    user: { login },
-    submitted_at: at,
-  });
-
   const reviewCreates = () =>
     asanaPost.mock.calls.filter(
       ([url, payload]: [string, any]) =>
@@ -2017,6 +2012,15 @@ describe("every event restates the review state", () => {
     submitted_at: "2026-08-01T00:00:00Z",
   };
 
+  // The run for PEER's own approval; the review's time is the event's.
+  const peerApprovalRun = baseEvent({
+    eventName: "pull_request_review",
+    action: "submitted",
+    reviewState: "approved",
+    username: PEER.githubName,
+    reviewSubmittedAt: peerApproved.submitted_at,
+  });
+
   // The cascade ignores an approval given while the PR is conflicting, and
   // nothing re-ran the tally once the conflict was gone.
   test("every tier approved with nobody pending moves the task to Approved", async () => {
@@ -2082,53 +2086,34 @@ describe("every event restates the review state", () => {
 
   // The run for an approval reads the PR before GitHub has taken the approver
   // off its list; read as asked again, they were handed a fresh Review. The
-  // timeline shows the request predating the review, so the entry is stale.
+  // request predates the approval the run is for, so the entry is stale -
+  // and the timeline need not have caught up on the review itself to say so.
   test("the run for an approval does not read its approver as asked again", async () => {
     mockAsana({ subtasks: [ciSubtask("approved")] });
     mockGithub(
       readyPr(),
       [peerApproved],
       [],
-      [
-        requestedOnTimeline(PEER.githubName, "2026-07-01T00:00:00Z"),
-        reviewedOnTimeline(PEER.githubName, "2026-08-01T00:00:00Z"),
-      ]
+      [requestedOnTimeline(PEER.githubName, "2026-07-01T00:00:00Z")]
     );
-    await reconcileReviewState(
-      baseEvent({
-        eventName: "pull_request_review",
-        action: "submitted",
-        reviewState: "approved",
-        username: PEER.githubName,
-      })
-    );
+    await reconcileReviewState(peerApprovalRun);
     expect(reviewCreates()).toHaveLength(0);
     expect(movesTo("Approved")).toHaveLength(1);
   });
 
-  // The same two lists, and the opposite meaning: the timeline puts the
-  // request after the review, so the author really did ask again. Read as
-  // the stale case, this promoted the task to Approved while GitHub was
-  // still waiting on that reviewer.
+  // The same two lists, and the opposite meaning: the request follows the
+  // approval, so the author really did ask again. Read as the stale case,
+  // this promoted the task to Approved while GitHub was still waiting on
+  // that reviewer.
   test("an approver re-requested after their approval is still waited on", async () => {
     mockAsana({ subtasks: [ciSubtask("approved")] });
     mockGithub(
       readyPr(),
       [peerApproved],
       [],
-      [
-        reviewedOnTimeline(PEER.githubName, "2026-08-01T00:00:00Z"),
-        requestedOnTimeline(PEER.githubName, "2026-08-02T00:00:00Z"),
-      ]
+      [requestedOnTimeline(PEER.githubName, "2026-08-02T00:00:00Z")]
     );
-    await reconcileReviewState(
-      baseEvent({
-        eventName: "pull_request_review",
-        action: "submitted",
-        reviewState: "approved",
-        username: PEER.githubName,
-      })
-    );
+    await reconcileReviewState(peerApprovalRun);
     expect(movesTo("Approved")).toHaveLength(0);
     expect(movesTo("Testing / Review")).toHaveLength(1);
     expect(reviewCreates()).toHaveLength(1);
@@ -2144,7 +2129,6 @@ describe("every event restates the review state", () => {
       [peerApproved],
       [],
       [
-        reviewedOnTimeline(PEER.githubName, "2026-08-01T00:00:00Z"),
         requestedOnTimeline(PEER.githubName, "2026-08-02T00:00:00Z"),
         {
           event: "review_request_removed",
@@ -2153,14 +2137,7 @@ describe("every event restates the review state", () => {
         },
       ]
     );
-    await reconcileReviewState(
-      baseEvent({
-        eventName: "pull_request_review",
-        action: "submitted",
-        reviewState: "approved",
-        username: PEER.githubName,
-      })
-    );
+    await reconcileReviewState(peerApprovalRun);
     expect(movesTo("Approved")).toHaveLength(1);
     expect(reviewCreates()).toHaveLength(0);
   });
@@ -2177,14 +2154,7 @@ describe("every event restates the review state", () => {
         ? Promise.reject(new Error("timeline unreachable"))
         : answer?.(url)
     );
-    await reconcileReviewState(
-      baseEvent({
-        eventName: "pull_request_review",
-        action: "submitted",
-        reviewState: "approved",
-        username: PEER.githubName,
-      })
-    );
+    await reconcileReviewState(peerApprovalRun);
     expect(movesTo("Approved")).toHaveLength(0);
     expect(movesTo("Testing / Review")).toHaveLength(1);
     expect(reviewCreates()).toHaveLength(1);

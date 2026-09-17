@@ -121,16 +121,17 @@ const tallyReviews = (
   return latestReviews;
 };
 
-// Whether GitHub asked this reviewer again after the review they just gave.
+// Whether GitHub asked this reviewer again after the review this run is for.
 //
 // `requested_reviewers` alone cannot answer it. GitHub takes a reviewer off
 // that list when they review and puts them back when they are re-requested,
 // but stamps no time on either, so the run for an approval sees one list that
 // names the approver and cannot tell which of the two put them there: a read
 // taken before GitHub caught up, or the author genuinely asking again. The
-// timeline is the only place the two are distinguishable - it carries
-// `review_requested` and `reviewed` as timestamped entries - so it is what
-// decides, rather than a guess about which read was fresher.
+// timeline is the only place a request carries a time, so it is what decides,
+// rather than a guess about which read was fresher. The review's own time is
+// the event's: a timeline that has not caught up on the review yet must not
+// read the request that preceded it as the newer fact.
 //
 // An unreadable timeline answers true: the approver stays listed, as they did
 // before this check existed. The spare Review that costs is put right by the
@@ -142,29 +143,18 @@ const wasRerequestedAfterReview = async (
 ) => {
   const timelineUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.ISSUES_URL}${event.prNumber}${REQUESTS.TIMELINE_URL}`;
   let lastRequestedAt = "";
-  let lastReviewedAt = "";
   try {
     for (let page = 1; ; page++) {
       const entries = (await githubAxios.get(`${timelineUrl}&page=${page}`))
         .data;
       for (const entry of entries) {
-        if (
-          entry.event === "review_requested" &&
-          entry.requested_reviewer?.login === githubName
-        ) {
+        if (entry.requested_reviewer?.login !== githubName) continue;
+        if (entry.event === "review_requested") {
           lastRequestedAt = entry.created_at;
         }
         // A request GitHub withdrew is not a request, and the withdrawal is
         // the later fact about that reviewer.
-        if (
-          entry.event === "review_request_removed" &&
-          entry.requested_reviewer?.login === githubName
-        ) {
-          lastRequestedAt = "";
-        }
-        if (entry.event === "reviewed" && entry.user?.login === githubName) {
-          lastReviewedAt = entry.submitted_at;
-        }
+        if (entry.event === "review_request_removed") lastRequestedAt = "";
       }
       if (entries.length < REQUESTS.TIMELINE_PAGE_SIZE) break;
     }
@@ -173,7 +163,7 @@ const wasRerequestedAfterReview = async (
     console.warn(`Failed to read the timeline for ${githubName}:`, error);
     return true;
   }
-  return Boolean(lastRequestedAt) && lastRequestedAt > lastReviewedAt;
+  return lastRequestedAt > event.reviewSubmittedAt;
 };
 
 // A dismissed review blocks its tier, but nothing summons its reviewer
