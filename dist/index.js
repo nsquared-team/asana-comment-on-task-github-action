@@ -17798,15 +17798,22 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
     // login in the same list, so dropping it on the shape of the event alone
     // would promote the task to Approved while GitHub still waits on that
     // reviewer, and it would sit there until the next event's re-check.
-    const isApprovalRun = event.eventName === "pull_request_review" &&
+    //
+    // The timeline is read only when there is something to settle: a tier
+    // reviewer's approval with the fresh list still naming them. Once GitHub
+    // has caught up there is no entry to explain, and a bot's approval gates
+    // nothing whichever list it sits on, so neither makes the call.
+    const listed = pullRequest.requested_reviewers || [];
+    const approverStillListed = event.eventName === "pull_request_review" &&
         event.action === "submitted" &&
         event.reviewState === "approved" &&
-        Boolean(event.username);
-    const justApproved = isApprovalRun &&
+        utils.isReviewTier(utils.findUserByGithubName(event.username)) &&
+        listed.some((reviewer) => reviewer.login === event.username);
+    const justApproved = approverStillListed &&
         !(yield wasRerequestedAfterReview(event, event.username))
         ? event.username
         : undefined;
-    const requestedLogins = (pullRequest.requested_reviewers || [])
+    const requestedLogins = listed
         .map((reviewer) => reviewer.login)
         .filter((login) => login !== justApproved);
     const requestedReviewers = requestedLogins

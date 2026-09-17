@@ -1743,6 +1743,9 @@ describe("every event restates the review state", () => {
         ["Review", "Blocking Review"].includes(payload.data.name)
     );
 
+  const timelineReads = () =>
+    githubGet.mock.calls.filter(([url]: [string]) => url.includes("/timeline"));
+
   const commentEvent = baseEvent({
     eventName: "issue_comment",
     action: "created",
@@ -2158,6 +2161,36 @@ describe("every event restates the review state", () => {
     expect(movesTo("Approved")).toHaveLength(0);
     expect(movesTo("Testing / Review")).toHaveLength(1);
     expect(reviewCreates()).toHaveLength(1);
+  });
+
+  // Once GitHub has caught up there is no entry to explain, so the common
+  // path pays for no timeline read.
+  test("the run for an approval reads no timeline once the list has caught up", async () => {
+    mockAsana({ subtasks: [ciSubtask("approved")] });
+    mockGithub(readyPr({ requested_reviewers: [] }), [peerApproved]);
+    await reconcileReviewState(peerApprovalRun);
+    expect(movesTo("Approved")).toHaveLength(1);
+    expect(timelineReads()).toHaveLength(0);
+  });
+
+  // A bot's approval gates nothing whichever list it sits on, so there is
+  // nothing for the timeline to settle.
+  test("a bot's approval reads no timeline", async () => {
+    mockAsana({ subtasks: [ciSubtask("approved")] });
+    mockGithub(
+      readyPr({
+        requested_reviewers: [
+          { login: "otto-bot-git" },
+          { login: PEER.githubName },
+        ],
+      }),
+      [peerApproved]
+    );
+    await reconcileReviewState(
+      baseEvent({ ...peerApprovalRun, username: "otto-bot-git" })
+    );
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(timelineReads()).toHaveLength(0);
   });
 
   test("a dismissed reviewer is not summoned again by the re-check", async () => {
