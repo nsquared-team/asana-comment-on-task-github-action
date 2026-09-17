@@ -121,6 +121,59 @@ const tallyReviews = (
   return latestReviews;
 };
 
+// Whether GitHub asked this reviewer again after the review they just gave.
+//
+// `requested_reviewers` alone cannot answer it. GitHub takes a reviewer off
+// that list when they review and puts them back when they are re-requested,
+// but stamps no time on either, so the run for an approval sees one list that
+// names the approver and cannot tell which of the two put them there: a read
+// taken before GitHub caught up, or the author genuinely asking again. The
+// timeline is the only place the two are distinguishable - it carries
+// `review_requested` and `reviewed` as timestamped entries - so it is what
+// decides, rather than a guess about which read was fresher.
+//
+// An unreadable timeline answers false: that leaves the approver dropped from
+// the requested list, which is the behaviour on the common path anyway.
+const wasRerequestedAfterReview = async (
+  event: SyncEvent,
+  githubName: string
+) => {
+  const timelineUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.ISSUES_URL}${event.prNumber}${REQUESTS.TIMELINE_URL}`;
+  let lastRequestedAt = "";
+  let lastReviewedAt = "";
+  try {
+    for (let page = 1; ; page++) {
+      const entries = (await githubAxios.get(`${timelineUrl}&page=${page}`))
+        .data;
+      for (const entry of entries) {
+        if (
+          entry.event === "review_requested" &&
+          entry.requested_reviewer?.login === githubName
+        ) {
+          lastRequestedAt = entry.created_at;
+        }
+        // A request GitHub withdrew is not a request, and the withdrawal is
+        // the later fact about that reviewer.
+        if (
+          entry.event === "review_request_removed" &&
+          entry.requested_reviewer?.login === githubName
+        ) {
+          lastRequestedAt = "";
+        }
+        if (entry.event === "reviewed" && entry.user?.login === githubName) {
+          lastReviewedAt = entry.submitted_at;
+        }
+      }
+      if (entries.length < REQUESTS.TIMELINE_PAGE_SIZE) break;
+    }
+  } catch (error) {
+    // The timeline only sharpens a guess; losing it must not stall the sync.
+    console.warn(`Failed to read the timeline for ${githubName}:`, error);
+    return false;
+  }
+  return Boolean(lastRequestedAt) && lastRequestedAt > lastReviewedAt;
+};
+
 // A dismissed review blocks its tier, but nothing summons its reviewer
 // back: they are no longer in requested_reviewers and their old subtask is
 // answered - so nobody re-requests them by hand and the tally deadlocks
@@ -404,12 +457,22 @@ export const reconcileReviewState = async (event: SyncEvent) => {
   if (pullRequest.mergeable !== true) return;
 
   // The run for an approval reads the PR before GitHub has taken the approver
-  // off its list; the approval is the fresher fact. Otherwise the approver
-  // reads as asked again and is handed a fresh Review for nothing.
-  const justApproved =
+  // off its list; the approval is the fresher fact, so the approver is not
+  // requested in this run and is handed no second "Review".
+  //
+  // Unless GitHub really was asked to summon them again, which the timeline
+  // is what settles. The stale entry and a genuine re-request put the same
+  // login in the same list, so dropping it on the shape of the event alone
+  // would promote the task to Approved while GitHub still waits on that
+  // reviewer - and nothing downstream repairs that.
+  const isApprovalRun =
     event.eventName === "pull_request_review" &&
     event.action === "submitted" &&
-    event.reviewState === "approved"
+    event.reviewState === "approved" &&
+    Boolean(event.username);
+  const justApproved =
+    isApprovalRun &&
+    !(await wasRerequestedAfterReview(event, event.username as string))
       ? event.username
       : undefined;
   const requestedLogins: string[] = (pullRequest.requested_reviewers || [])

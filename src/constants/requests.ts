@@ -23,3 +23,9 @@ export const REVIEWS_URL = "/reviews";
 export const REVIEW_COMMENTS_PAGE_SIZE = 100;
 export const REVIEW_COMMENTS_URL = `/comments?per_page=${REVIEW_COMMENTS_PAGE_SIZE}`;
 export const REVIEWERS_URL = "/requested_reviewers";
+// The timeline hangs off the issues path, not pulls, and it is the only
+// place GitHub timestamps a review request - `requested_reviewers` is a bare
+// list with no times on it.
+export const ISSUES_URL = "/issues/";
+export const TIMELINE_PAGE_SIZE = 100;
+export const TIMELINE_URL = `/timeline?per_page=${TIMELINE_PAGE_SIZE}`;

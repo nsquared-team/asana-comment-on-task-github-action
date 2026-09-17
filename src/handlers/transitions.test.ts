@@ -1712,17 +1712,34 @@ describe("every event restates the review state", () => {
   const mockGithub = (
     pullRequest: any,
     reviews: any[] = [],
-    comments: any[] = []
+    comments: any[] = [],
+    timeline: any[] = []
   ) =>
     githubGet.mockImplementation((url: string) =>
       Promise.resolve({
         data: url.endsWith("/reviews")
           ? reviews
+          : url.includes("/timeline")
+          ? timeline
           : url.includes("/comments")
           ? comments
           : pullRequest,
       })
     );
+
+  // GitHub stamps a review request only on the timeline, so that is where a
+  // re-request is told apart from a list the PR read had not caught up on.
+  const requestedOnTimeline = (login: string, at: string) => ({
+    event: "review_requested",
+    requested_reviewer: { login },
+    created_at: at,
+  });
+
+  const reviewedOnTimeline = (login: string, at: string) => ({
+    event: "reviewed",
+    user: { login },
+    submitted_at: at,
+  });
 
   const reviewCreates = () =>
     asanaPost.mock.calls.filter(
@@ -2064,10 +2081,19 @@ describe("every event restates the review state", () => {
   });
 
   // The run for an approval reads the PR before GitHub has taken the approver
-  // off its list; read as asked again, they were handed a fresh Review.
+  // off its list; read as asked again, they were handed a fresh Review. The
+  // timeline shows the request predating the review, so the entry is stale.
   test("the run for an approval does not read its approver as asked again", async () => {
     mockAsana({ subtasks: [ciSubtask("approved")] });
-    mockGithub(readyPr(), [peerApproved]);
+    mockGithub(
+      readyPr(),
+      [peerApproved],
+      [],
+      [
+        requestedOnTimeline(PEER.githubName, "2026-07-01T00:00:00Z"),
+        reviewedOnTimeline(PEER.githubName, "2026-08-01T00:00:00Z"),
+      ]
+    );
     await reconcileReviewState(
       baseEvent({
         eventName: "pull_request_review",
@@ -2078,6 +2104,65 @@ describe("every event restates the review state", () => {
     );
     expect(reviewCreates()).toHaveLength(0);
     expect(movesTo("Approved")).toHaveLength(1);
+  });
+
+  // The same two lists, and the opposite meaning: the timeline puts the
+  // request after the review, so the author really did ask again. Read as
+  // the stale case, this promoted the task to Approved while GitHub was
+  // still waiting on that reviewer.
+  test("an approver re-requested after their approval is still waited on", async () => {
+    mockAsana({ subtasks: [ciSubtask("approved")] });
+    mockGithub(
+      readyPr(),
+      [peerApproved],
+      [],
+      [
+        reviewedOnTimeline(PEER.githubName, "2026-08-01T00:00:00Z"),
+        requestedOnTimeline(PEER.githubName, "2026-08-02T00:00:00Z"),
+      ]
+    );
+    await reconcileReviewState(
+      baseEvent({
+        eventName: "pull_request_review",
+        action: "submitted",
+        reviewState: "approved",
+        username: PEER.githubName,
+      })
+    );
+    expect(movesTo("Approved")).toHaveLength(0);
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(1);
+    expect(reviewCreates()[0][1].data.assignee).toBe(PEER.asanaId);
+  });
+
+  // A request GitHub withdrew is not a standing request, so the reviewer is
+  // not waited on and the stale-entry reading holds.
+  test("a re-request GitHub later withdrew does not hold the task in review", async () => {
+    mockAsana({ subtasks: [ciSubtask("approved")] });
+    mockGithub(
+      readyPr(),
+      [peerApproved],
+      [],
+      [
+        reviewedOnTimeline(PEER.githubName, "2026-08-01T00:00:00Z"),
+        requestedOnTimeline(PEER.githubName, "2026-08-02T00:00:00Z"),
+        {
+          event: "review_request_removed",
+          requested_reviewer: { login: PEER.githubName },
+          created_at: "2026-08-03T00:00:00Z",
+        },
+      ]
+    );
+    await reconcileReviewState(
+      baseEvent({
+        eventName: "pull_request_review",
+        action: "submitted",
+        reviewState: "approved",
+        username: PEER.githubName,
+      })
+    );
+    expect(movesTo("Approved")).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(0);
   });
 
   test("a dismissed reviewer is not summoned again by the re-check", async () => {
