@@ -2063,6 +2063,23 @@ describe("every event restates the review state", () => {
     expect(movesTo("Testing / Review")).toHaveLength(1);
   });
 
+  // The run for an approval reads the PR before GitHub has taken the approver
+  // off its list; read as asked again, they were handed a fresh Review.
+  test("the run for an approval does not read its approver as asked again", async () => {
+    mockAsana({ subtasks: [ciSubtask("approved")] });
+    mockGithub(readyPr(), [peerApproved]);
+    await reconcileReviewState(
+      baseEvent({
+        eventName: "pull_request_review",
+        action: "submitted",
+        reviewState: "approved",
+        username: PEER.githubName,
+      })
+    );
+    expect(reviewCreates()).toHaveLength(0);
+    expect(movesTo("Approved")).toHaveLength(1);
+  });
+
   test("a dismissed reviewer is not summoned again by the re-check", async () => {
     mockAsana();
     mockGithub(readyPr({ requested_reviewers: [] }), [
@@ -2085,6 +2102,17 @@ describe("the last pending review says it is blocking", () => {
     githubName: "aminabdulkhalek",
     asanaId: "1202393076412167",
     team: "PEER_DEV",
+  };
+
+  const DEV = {
+    githubName: "NatalieMac",
+    asanaId: "1208102635655720",
+    team: "DEV",
+  };
+  const DEV2 = {
+    githubName: "tylerdigital",
+    asanaId: "1992810427453",
+    team: "DEV",
   };
 
   const pendingReview = (
@@ -2175,6 +2203,41 @@ describe("the last pending review says it is blocking", () => {
 
     expect(renameOf("review-peer2")?.[1].data.name).toBe("Blocking Review");
     expect(renameOf("review-peer")).toBeUndefined();
+  });
+
+  // GitHub's payload for an approval still lists the approver as requested:
+  // the list is read before the approval takes them off it. Counted as
+  // requested, the approver's just-answered subtask read as a request nobody
+  // had served, and the cascade handed them a second Review.
+  test("the approver, still on the payload's list, is not handed a second Review", async () => {
+    mockLiveAsana([
+      pendingReview("review-dev", DEV.asanaId),
+      pendingReview("review-dev2", DEV2.asanaId),
+    ]);
+    githubPr([DEV, DEV2], [approvalBy(PEER), approvalBy(DEV)]);
+
+    await handleReview(reviewBy(DEV.githubName, "approved", [DEV, DEV2]));
+
+    expect(asanaPut).toHaveBeenCalledWith("/tasks/review-dev", {
+      data: { approval_status: "approved" },
+    });
+    expect(reviewCreates()).toHaveLength(0);
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+
+  // Two peers, so the cascade summons nobody and only the handler's own
+  // pass can retitle the one left - from the same stale list.
+  test("the approver, still on the payload's list, is not counted against the reviewer left", async () => {
+    mockLiveAsana([
+      pendingReview("review-peer", PEER.asanaId),
+      pendingReview("review-peer2", PEER2.asanaId),
+    ]);
+    githubPr([PEER, PEER2], [approvalBy(PEER)]);
+
+    await handleReview(reviewBy(PEER.githubName, "approved", [PEER, PEER2]));
+
+    expect(reviewCreates()).toHaveLength(0);
+    expect(renameOf("review-peer2")?.[1].data.name).toBe("Blocking Review");
   });
 
   test("two reviewers still outstanding are both left as Review", async () => {

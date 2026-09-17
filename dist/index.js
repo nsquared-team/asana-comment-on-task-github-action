@@ -17562,8 +17562,9 @@ const tierVerdict = (latestReviews) => {
 };
 // A PR is fully approved only when every tier has signed off; approvals
 // cascade PEER_DEV -> DEV -> QA, creating the next tier's subtasks as the
-// previous tier completes.
-const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, function* () {
+// previous tier completes. `requestedReviewers` is who GitHub still waits on
+// once this approval is in.
+const handleApprovalCascade = (event, requestedReviewers) => __awaiter(void 0, void 0, void 0, function* () {
     var _a;
     const githubUrl = pullRequestUrl(event);
     // A conflicting PR has a diff nobody has reviewed yet - resolving the
@@ -17580,10 +17581,10 @@ const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, funct
     const reviews = (yield githubAxios_1.default.get(`${githubUrl}${REQUESTS.REVIEWS_URL}`))
         .data;
     const threadOpeners = yield findThreadOpeners(githubUrl, reviews, author);
-    const latestReviews = tallyReviews(reviews, event.requestedReviewers, author, threadOpeners);
+    const latestReviews = tallyReviews(reviews, requestedReviewers, author, threadOpeners);
     const { approvedByPeer, approvedByDev, approvedByQa, fullyApproved } = tierVerdict(latestReviews);
-    const devReviewers = event.requestedReviewers.filter((reviewer) => reviewer.team === "DEV");
-    const qaReviewers = event.requestedReviewers.filter((reviewer) => reviewer.team === "QA");
+    const devReviewers = requestedReviewers.filter((reviewer) => reviewer.team === "DEV");
+    const qaReviewers = requestedReviewers.filter((reviewer) => reviewer.team === "QA");
     const followers = [];
     if (approvedByPeer && !approvedByDev) {
         for (const reviewer of devReviewers)
@@ -17616,9 +17617,16 @@ const handleReview = (event) => __awaiter(void 0, void 0, void 0, function* () {
     };
     const threadOpeners = yield findThreadOpeners(pullRequestUrl(event), [review], event.prAuthor);
     const verdict = verdictOf(review, event.prAuthor, threadOpeners).toLowerCase();
+    // GitHub's payload still lists this review's reviewer as requested: the
+    // list is read before the review takes them off it. The review is the
+    // fresher fact, so its reviewer is not requested in this run. Counting
+    // them handed an approver a second Review as their approval was being
+    // mirrored: their just-answered subtask looked like a request nobody had
+    // served.
+    const stillRequested = event.requestedReviewers.filter((requested) => requested.githubName !== event.username);
     // Mirror the reviewer's verdict onto their approval subtask.
     if (event.action === "submitted" && SUBTASK_REVIEW_STATES.includes(verdict)) {
-        const activeTier = utils.pickReviewerTier(event.requestedReviewers);
+        const activeTier = utils.pickReviewerTier(stillRequested);
         for (const taskId of event.taskIds) {
             const approvalSubtask = yield asana.getApprovalSubtask(taskId, false, reviewer);
             if (approvalSubtask) {
@@ -17665,7 +17673,7 @@ const handleReview = (event) => __awaiter(void 0, void 0, void 0, function* () {
     if (event.action === "submitted" &&
         event.reviewState === "approved" &&
         !event.isDraft) {
-        cascadeFollowers = yield handleApprovalCascade(event);
+        cascadeFollowers = yield handleApprovalCascade(event, stillRequested);
     }
     // Followers: reviewer, active tier, mentioned users, cascade additions.
     const { body, mentionedAsanaIds } = (0, comment_1.buildFormattedBody)(event);
@@ -17728,7 +17736,17 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
     // a conflict alert would hand back the very subtasks the alert cleared.
     if (pullRequest.mergeable !== true)
         return;
-    const requestedLogins = (pullRequest.requested_reviewers || []).map((reviewer) => reviewer.login);
+    // The run for an approval reads the PR before GitHub has taken the approver
+    // off its list; the approval is the fresher fact. Otherwise the approver
+    // reads as asked again and is handed a fresh Review for nothing.
+    const justApproved = event.eventName === "pull_request_review" &&
+        event.action === "submitted" &&
+        event.reviewState === "approved"
+        ? event.username
+        : undefined;
+    const requestedLogins = (pullRequest.requested_reviewers || [])
+        .map((reviewer) => reviewer.login)
+        .filter((login) => login !== justApproved);
     const requestedReviewers = requestedLogins
         .map(utils.findUserByGithubName)
         .filter(Boolean);
