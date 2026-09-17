@@ -1,0 +1,11 @@
+## Goal
+
+A reviewer who just approved is never asked again by the sync itself: only a real GitHub re-request — a person, or the dismissal path — creates a second "Review" subtask for them.
+
+## Definition of Done
+
+- [ ] On the run for a reviewer's own approval, the cascade hands that reviewer no new Review subtask, even when GitHub's payload still lists them as requested and another reviewer in their tier is pending.
+- [ ] On that same run, the reconcile hands them none either, even when the fresh PR read still lists them as requested.
+- [ ] A test for each that fails on `main` and passes with the fix; every existing test still passes, including the genuine re-request case.
+- [ ] The README's approval row names the rule.
+- [ ] `dist/` rebuilt and committed.
