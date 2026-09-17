@@ -19,9 +19,7 @@ const moveTasksToInProgress = async (event: SyncEvent) => {
 const moveTasksToReview = async (event: SyncEvent, activeTier: any[]) => {
   for (const taskId of event.taskIds) {
     await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
-    for (const reviewer of activeTier) {
-      await asana.addRequestedReview(taskId, reviewer, event.prUrl);
-    }
+    await asana.addRequestedReviews(taskId, activeTier, event.prUrl);
   }
 };
 
@@ -68,7 +66,8 @@ export const handlePullRequest = async (event: SyncEvent) => {
       await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
       // Each review_requested event carries exactly one reviewer; creating
       // only that reviewer's subtask keeps parallel workflow runs from
-      // duplicating each other's subtasks.
+      // duplicating each other's subtasks. Its name still reads the whole
+      // tier: GitHub lists everyone requested alongside them.
       if (
         event.eventReviewer &&
         activeTier.some(
@@ -76,10 +75,11 @@ export const handlePullRequest = async (event: SyncEvent) => {
             reviewer.githubName === event.eventReviewer.githubName
         )
       ) {
-        await asana.addRequestedReview(
+        await asana.addRequestedReviews(
           taskId,
-          event.eventReviewer,
-          event.prUrl
+          [event.eventReviewer],
+          event.prUrl,
+          activeTier
         );
       }
     }

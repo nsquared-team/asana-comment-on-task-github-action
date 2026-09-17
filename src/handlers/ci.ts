@@ -72,9 +72,7 @@ export const handleCiStatus = async (event: SyncEvent) => {
           SECTIONS.APPROVED,
           ...SECTIONS.RELEASED_SECTIONS,
         ]);
-        for (const reviewer of activeTier) {
-          await asana.addRequestedReview(taskId, reviewer, event.prUrl);
-        }
+        await asana.addRequestedReviews(taskId, activeTier, event.prUrl);
       }
 
       // CI broke: green -> red. Review requests are stale; task goes back.

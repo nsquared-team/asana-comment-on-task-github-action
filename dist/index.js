@@ -16082,7 +16082,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.updateApprovalSubtask = exports.addFyiReviews = exports.addRequestedReview = exports.addApprovalTask = exports.cleanupApprovalTasks = exports.relabelReviewSubtasksAsFyi = exports.deleteReviewSubtasks = exports.deleteApprovalTasks = exports.getApprovalSubtask = exports.getAllApprovalSubtasks = exports.getStories = exports.addFollowers = exports.setTaskIncomplete = exports.moveTaskToSection = exports.getTask = exports.getAllPages = exports.ottoUser = void 0;
+exports.updateApprovalSubtask = exports.addFyiReviews = exports.addRequestedReviews = exports.addApprovalTask = exports.cleanupApprovalTasks = exports.relabelReviewSubtasksAsFyi = exports.deleteReviewSubtasks = exports.syncBlockingReviewTitles = exports.isPendingReviewSubtask = exports.BLOCKING_REVIEW_NAME = exports.REVIEW_NAME = exports.deleteApprovalTasks = exports.getApprovalSubtask = exports.getAllApprovalSubtasks = exports.getStories = exports.addFollowers = exports.setTaskIncomplete = exports.moveTaskToSection = exports.getTask = exports.getAllPages = exports.ottoUser = void 0;
 const core_1 = __nccwpck_require__(7484);
 const asanaAxios_1 = __importDefault(__nccwpck_require__(5940));
 const REQUESTS = __importStar(__nccwpck_require__(4291));
@@ -16206,11 +16206,48 @@ const deleteApprovalTasks = (approvalSubtasks) => __awaiter(void 0, void 0, void
     }
 });
 exports.deleteApprovalTasks = deleteApprovalTasks;
-// Reviewer approval subtasks are named "Review"; the CI verdict subtask is
-// named "Automated CI Testing" and must survive review cleanups.
+// A pending review subtask goes by one of two names: "Blocking Review" while
+// its assignee is the only reviewer GitHub is still waiting on, "Review"
+// otherwise. Both are the same subtask in the same state - the name only
+// tells its assignee whether the PR is waiting on them alone.
+exports.REVIEW_NAME = "Review";
+exports.BLOCKING_REVIEW_NAME = "Blocking Review";
+const CI_SUBTASK_NAME = "Automated CI Testing";
+const isPendingReviewName = (name) => name === exports.REVIEW_NAME || name === exports.BLOCKING_REVIEW_NAME;
+const isPendingReviewSubtask = (subtask) => isPendingReviewName(subtask === null || subtask === void 0 ? void 0 : subtask.name);
+exports.isPendingReviewSubtask = isPendingReviewSubtask;
+// `outstanding` is the active-tier reviewers GitHub still lists as requested.
+const reviewNameFor = (assigneeGid, outstanding) => outstanding.length === 1 && outstanding[0].asanaId === assigneeGid
+    ? exports.BLOCKING_REVIEW_NAME
+    : exports.REVIEW_NAME;
+// The blocking title follows GitHub's list of who is still being waited on,
+// not the subtasks on the task. The subtasks of one summons arrive over
+// several steps and several runs - GitHub fires one review_requested per
+// reviewer - so counting them would name the first of two reviewers the last
+// blocker until the second one lands. GitHub knows the whole list before any
+// subtask exists. The name is restated rather than set once because the list
+// grows again as well as shrinks: a dismissed approval puts its reviewer back
+// in the queue, and a subtask still claiming to be the final blocker would be
+// telling its assignee the PR waits on them alone when it does not. Only the
+// two pending names are touched, so the CI subtask and the FYI labels a merge
+// leaves behind are never retitled.
+const syncBlockingReviewTitles = (taskId, outstanding) => __awaiter(void 0, void 0, void 0, function* () {
+    var _d;
+    const subtasks = yield (0, exports.getAllApprovalSubtasks)(taskId, (0, exports.ottoUser)());
+    for (const subtask of subtasks.filter(exports.isPendingReviewSubtask)) {
+        const wantedName = reviewNameFor((_d = subtask.assignee) === null || _d === void 0 ? void 0 : _d.gid, outstanding);
+        if (subtask.name === wantedName)
+            continue;
+        yield (0, exports.updateApprovalSubtask)(subtask.gid, { name: wantedName });
+    }
+});
+exports.syncBlockingReviewTitles = syncBlockingReviewTitles;
+// Reviewer approval subtasks are named "Review" or "Blocking Review"; the CI
+// verdict subtask is named "Automated CI Testing" and must survive review
+// cleanups.
 const deleteReviewSubtasks = (taskId) => __awaiter(void 0, void 0, void 0, function* () {
     const subtasks = yield (0, exports.getAllApprovalSubtasks)(taskId, (0, exports.ottoUser)());
-    const reviewSubtasks = subtasks.filter((subtask) => subtask.name !== "Automated CI Testing");
+    const reviewSubtasks = subtasks.filter((subtask) => subtask.name !== CI_SUBTASK_NAME);
     yield (0, exports.deleteApprovalTasks)(reviewSubtasks);
 });
 exports.deleteReviewSubtasks = deleteReviewSubtasks;
@@ -16221,13 +16258,15 @@ exports.deleteReviewSubtasks = deleteReviewSubtasks;
 // bare name leaves an already-prefixed subtask ("FYI Review ..." from an
 // earlier merge event, or any other "... Review") untouched, which is what
 // makes a repeated merge event a no-op. getAllApprovalSubtasks only returns
-// incomplete subtasks, so an answered review keeps its name.
+// incomplete subtasks, so an answered review keeps its name. A subtask left
+// blocking when the PR merged is relabelled like any other: nobody is waiting
+// on it any more, so the name that says they are must not survive the merge.
 const NAMED_MERGE_BASES = ["main", "master", "beta", "production"];
 const fyiReviewName = (baseRef) => `FYI Review - merged to ${NAMED_MERGE_BASES.includes(baseRef) ? baseRef : "sub-PR"}`;
 const relabelReviewSubtasksAsFyi = (taskId, baseRef) => __awaiter(void 0, void 0, void 0, function* () {
     const subtasks = yield (0, exports.getAllApprovalSubtasks)(taskId, (0, exports.ottoUser)());
     for (const subtask of subtasks) {
-        if (subtask.name !== "Review")
+        if (!isPendingReviewName(subtask.name))
             continue;
         yield (0, exports.updateApprovalSubtask)(subtask.gid, { name: fyiReviewName(baseRef) });
     }
@@ -16281,14 +16320,18 @@ const createdBefore = (a, b) => {
         return a.created_at < b.created_at ? -1 : 1;
     return a.gid.length - b.gid.length || (a.gid < b.gid ? -1 : 1);
 };
-const isReviewSubtask = (subtask) => { var _a; return subtask.name === "Review" || Boolean((_a = subtask.name) === null || _a === void 0 ? void 0 : _a.startsWith("FYI Review")); };
+const isReviewSubtask = (subtask) => {
+    var _a;
+    return isPendingReviewName(subtask.name) ||
+        Boolean((_a = subtask.name) === null || _a === void 0 ? void 0 : _a.startsWith("FYI Review"));
+};
 // Asana enforces no uniqueness on subtasks, and two sync runs for one PR
 // routinely overlap (ready_for_review and review_requested land in the same
-// second), so both pass the existence check in addRequestedReview before
+// second), so both pass the existence check in addRequestedReviews before
 // either create is visible. Re-reading after the create and keeping only the
 // oldest pending review per assignee makes the racers converge: each sees the
 // same set and picks the same survivor, and a delete that loses the race 404s
-// and is skipped. It counts both names a review goes by, because the racing
+// and is skipped. It counts every name a review goes by, because the racing
 // run may be the merge that renames it.
 const deleteDuplicateReviewSubtasks = (taskId, reviewer) => __awaiter(void 0, void 0, void 0, function* () {
     const subtasks = yield (0, exports.getAllApprovalSubtasks)(taskId, (0, exports.ottoUser)());
@@ -16297,17 +16340,27 @@ const deleteDuplicateReviewSubtasks = (taskId, reviewer) => __awaiter(void 0, vo
         .sort(createdBefore);
     yield (0, exports.deleteApprovalTasks)(reviews.slice(1));
 });
-const addRequestedReview = (taskId, reviewer, pullRequestUrl) => __awaiter(void 0, void 0, void 0, function* () {
-    const existing = yield (0, exports.getApprovalSubtask)(taskId, false, reviewer);
-    if (!existing) {
-        const notes = `<a href='${pullRequestUrl}'> Click Here To Start Your Review </a>`;
-        yield (0, exports.addApprovalTask)(taskId, reviewer, "Review", "pending", notes);
+// `outstanding` is every active-tier reviewer GitHub is still waiting on: the
+// batch itself, except on review_requested, which adds one reviewer of a tier
+// that may hold several. A subtask is created under the name it keeps, and
+// the ones already there are brought in line once the batch is in. Nothing
+// added means nothing to retitle.
+const addRequestedReviews = (taskId, reviewers, pullRequestUrl, outstanding = reviewers) => __awaiter(void 0, void 0, void 0, function* () {
+    if (!reviewers.length)
+        return;
+    for (const reviewer of reviewers) {
+        const existing = yield (0, exports.getApprovalSubtask)(taskId, false, reviewer);
+        if (!existing) {
+            const notes = `<a href='${pullRequestUrl}'> Click Here To Start Your Review </a>`;
+            yield (0, exports.addApprovalTask)(taskId, reviewer, reviewNameFor(reviewer.asanaId, outstanding), "pending", notes);
+        }
+        // Runs on the existing path too, so a task that already carries a
+        // duplicate pair heals on the next event that touches the reviewer.
+        yield deleteDuplicateReviewSubtasks(taskId, reviewer);
     }
-    // Runs on the existing path too, so a task that already carries a
-    // duplicate pair heals on the next event that touches the reviewer.
-    yield deleteDuplicateReviewSubtasks(taskId, reviewer);
+    yield (0, exports.syncBlockingReviewTitles)(taskId, outstanding);
 });
-exports.addRequestedReview = addRequestedReview;
+exports.addRequestedReviews = addRequestedReviews;
 // Relabelling only ever reached reviewers the task already carried a subtask
 // for. When it carries none - the task was linked to the PR after the reviews
 // were requested, or the PR merged before the request reached Asana - the
@@ -16961,9 +17014,7 @@ const handleCiStatus = (event) => __awaiter(void 0, void 0, void 0, function* ()
                     SECTIONS.APPROVED,
                     ...SECTIONS.RELEASED_SECTIONS,
                 ]);
-                for (const reviewer of activeTier) {
-                    yield asana.addRequestedReview(taskId, reviewer, event.prUrl);
-                }
+                yield asana.addRequestedReviews(taskId, activeTier, event.prUrl);
             }
             // CI broke: green -> red. Review requests are stale; task goes back.
             if (ciSubtask.approval_status === "approved" &&
@@ -17205,9 +17256,7 @@ const moveTasksToInProgress = (event) => __awaiter(void 0, void 0, void 0, funct
 const moveTasksToReview = (event, activeTier) => __awaiter(void 0, void 0, void 0, function* () {
     for (const taskId of event.taskIds) {
         yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
-        for (const reviewer of activeTier) {
-            yield asana.addRequestedReview(taskId, reviewer, event.prUrl);
-        }
+        yield asana.addRequestedReviews(taskId, activeTier, event.prUrl);
     }
 });
 const HANDLED_ACTIONS = [
@@ -17251,10 +17300,11 @@ const handlePullRequest = (event) => __awaiter(void 0, void 0, void 0, function*
             yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
             // Each review_requested event carries exactly one reviewer; creating
             // only that reviewer's subtask keeps parallel workflow runs from
-            // duplicating each other's subtasks.
+            // duplicating each other's subtasks. Its name still reads the whole
+            // tier: GitHub lists everyone requested alongside them.
             if (event.eventReviewer &&
                 activeTier.some((reviewer) => reviewer.githubName === event.eventReviewer.githubName)) {
-                yield asana.addRequestedReview(taskId, event.eventReviewer, event.prUrl);
+                yield asana.addRequestedReviews(taskId, [event.eventReviewer], event.prUrl, activeTier);
             }
         }
         return;
@@ -17536,19 +17586,17 @@ const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, funct
     const qaReviewers = event.requestedReviewers.filter((reviewer) => reviewer.team === "QA");
     const followers = [];
     if (approvedByPeer && !approvedByDev) {
-        for (const reviewer of devReviewers) {
+        for (const reviewer of devReviewers)
             followers.push(reviewer.asanaId);
-            for (const taskId of event.taskIds) {
-                yield asana.addRequestedReview(taskId, reviewer, event.prUrl);
-            }
+        for (const taskId of event.taskIds) {
+            yield asana.addRequestedReviews(taskId, devReviewers, event.prUrl);
         }
     }
     if (approvedByPeer && approvedByDev && !approvedByQa) {
-        for (const reviewer of qaReviewers) {
+        for (const reviewer of qaReviewers)
             followers.push(reviewer.asanaId);
-            for (const taskId of event.taskIds) {
-                yield asana.addRequestedReview(taskId, reviewer, event.prUrl);
-            }
+        for (const taskId of event.taskIds) {
+            yield asana.addRequestedReviews(taskId, qaReviewers, event.prUrl);
         }
     }
     if (fullyApproved) {
@@ -17570,12 +17618,24 @@ const handleReview = (event) => __awaiter(void 0, void 0, void 0, function* () {
     const verdict = verdictOf(review, event.prAuthor, threadOpeners).toLowerCase();
     // Mirror the reviewer's verdict onto their approval subtask.
     if (event.action === "submitted" && SUBTASK_REVIEW_STATES.includes(verdict)) {
+        const activeTier = utils.pickReviewerTier(event.requestedReviewers);
         for (const taskId of event.taskIds) {
             const approvalSubtask = yield asana.getApprovalSubtask(taskId, false, reviewer);
             if (approvalSubtask) {
                 yield asana.updateApprovalSubtask(approvalSubtask.gid, {
                     approval_status: verdict,
                 });
+            }
+            // An approval takes its reviewer off GitHub's list without summoning
+            // anyone, so the add helper may never run: one of two peers signing off
+            // leaves a single reviewer holding the PR and nothing to retitle them.
+            // The re-check would, but it stands down while GitHub has yet to say the
+            // PR is mergeable. Only an approval leaves a pending subtask to retitle:
+            // a changes-request clears the whole set just below, and naming a
+            // blocker here only to delete it would notify the reviewer of a title
+            // that never mattered.
+            if (verdict === "approved") {
+                yield asana.syncBlockingReviewTitles(taskId, activeTier);
             }
         }
     }
@@ -17708,13 +17768,17 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
         // its verdict onto nothing, leaving a pending approval nobody will
         // answer. GitHub's verdict wins.
         for (const subtask of yield asana.getAllApprovalSubtasks(taskId, otto)) {
-            if (subtask.name === "Review" &&
+            if (asana.isPendingReviewSubtask(subtask) &&
                 approvedAsanaIds.includes((_c = subtask.assignee) === null || _c === void 0 ? void 0 : _c.gid)) {
                 yield asana.updateApprovalSubtask(subtask.gid, {
                     approval_status: "approved",
                 });
             }
         }
+        // This read of GitHub's list is the fresh one, so it is where a title a
+        // handler set from a stale payload is put right - on the two exits below
+        // as well, which never reach the add helper.
+        yield asana.syncBlockingReviewTitles(taskId, activeTier);
         if (fullyApproved) {
             yield asana.moveTaskToSection(taskId, SECTIONS.APPROVED, leaveAlone);
             continue;
@@ -17722,9 +17786,7 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
         if (!activeTier.length)
             continue;
         yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, leaveAlone);
-        for (const reviewer of activeTier) {
-            yield asana.addRequestedReview(taskId, reviewer, event.prUrl);
-        }
+        yield asana.addRequestedReviews(taskId, activeTier, event.prUrl);
     }
 });
 exports.reconcileReviewState = reconcileReviewState;

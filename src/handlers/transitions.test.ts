@@ -146,6 +146,47 @@ const QA = {
   team: "QA",
 };
 
+// mockAsana answers every read with the same subtask list, which hides
+// whatever a run does between two of its own calls. This one keeps the list
+// live - a create appends to it, a verdict completes its subtask, a rename or
+// delete applies - so a test sees the writes a run makes on the way and not
+// only where it ends up.
+const mockLiveAsana = (subtasks: any[]) => {
+  const live = subtasks.map((subtask) => ({ ...subtask }));
+  mockAsana({ subtasks: live });
+  const byUrl = (url: string) =>
+    live.find((subtask) => url === `/tasks/${subtask.gid}`);
+  let created = 0;
+  asanaPost.mockImplementation((url: string, body: any) => {
+    if (url.endsWith("/subtasks")) {
+      created += 1;
+      live.push({
+        gid: `new-${created}`,
+        name: body.data.name,
+        resource_subtype: "approval",
+        completed: false,
+        created_by: { gid: OTTO_ASANA_ID },
+        assignee: { gid: body.data.assignee },
+        created_at: `2026-09-02T21:02:${20 + created}.000Z`,
+      });
+    }
+    return Promise.resolve({ status: 201, data: {} });
+  });
+  asanaPut.mockImplementation((url: string, body: any) => {
+    const subtask = byUrl(url);
+    if (subtask && body.data.name) subtask.name = body.data.name;
+    if (subtask && body.data.approval_status) {
+      subtask.completed = body.data.approval_status !== "pending";
+    }
+    return Promise.resolve({ status: 200, data: {} });
+  });
+  asanaDelete.mockImplementation((url: string) => {
+    const index = live.findIndex((subtask) => url === `/tasks/${subtask.gid}`);
+    if (index >= 0) live.splice(index, 1);
+    return Promise.resolve({ status: 200, data: {} });
+  });
+};
+
 beforeEach(() => {
   jest.clearAllMocks();
 });
@@ -1686,7 +1727,8 @@ describe("every event restates the review state", () => {
   const reviewCreates = () =>
     asanaPost.mock.calls.filter(
       ([url, payload]: [string, any]) =>
-        url.includes("/tasks/111/subtasks") && payload.data.name === "Review"
+        url.includes("/tasks/111/subtasks") &&
+        ["Review", "Blocking Review"].includes(payload.data.name)
     );
 
   const commentEvent = baseEvent({
@@ -2029,5 +2071,321 @@ describe("every event restates the review state", () => {
     await reconcileReviewState(commentEvent);
     expect(githubPost).not.toHaveBeenCalled();
     expect(movesTo("Approved")).toHaveLength(0);
+  });
+});
+
+describe("the last pending review says it is blocking", () => {
+  const QA2 = {
+    githubName: "cynhu92",
+    asanaId: "1200161861602258",
+    team: "QA",
+  };
+  const QA3 = { githubName: "usmankhalid738" };
+  const PEER2 = {
+    githubName: "aminabdulkhalek",
+    asanaId: "1202393076412167",
+    team: "PEER_DEV",
+  };
+
+  const pendingReview = (
+    gid: string,
+    assigneeGid: string,
+    name = "Review"
+  ) => ({
+    gid,
+    name,
+    resource_subtype: "approval",
+    completed: false,
+    created_by: { gid: OTTO_ASANA_ID },
+    assignee: { gid: assigneeGid },
+    created_at: "2026-09-02T21:02:19.100Z",
+  });
+
+  const ciSubtask = {
+    gid: "ci-1",
+    name: "Automated CI Testing",
+    resource_subtype: "approval",
+    completed: false,
+    created_by: { gid: OTTO_ASANA_ID },
+    assignee: { gid: OTTO_ASANA_ID },
+    created_at: "2026-09-02T21:02:19.100Z",
+  };
+
+  const renames = () =>
+    asanaPut.mock.calls.filter(([, body]: [string, any]) => body?.data?.name);
+
+  const renameOf = (gid: string) =>
+    renames().find(([url]: [string]) => url === `/tasks/${gid}`);
+
+  const reviewCreates = () =>
+    asanaPost.mock.calls.filter(([url]: [string]) =>
+      url.includes("/tasks/111/subtasks")
+    );
+
+  // `stillRequested` is who GitHub goes on waiting for once the review is in.
+  const reviewBy = (
+    githubName: string,
+    reviewState: string,
+    stillRequested: any[] = []
+  ) =>
+    baseEvent({
+      eventName: "pull_request_review",
+      action: "submitted",
+      reviewState,
+      username: githubName,
+      reviewBody: "looked at it",
+      commentUrl: "https://github.com/o/r/pull/42#review-b1",
+      requestedReviewers: stillRequested,
+    });
+
+  const githubPr = (requested: any[], reviews: any[] = []) =>
+    githubGet.mockImplementation((url: string) =>
+      Promise.resolve({
+        data: url.endsWith("/reviews")
+          ? reviews
+          : {
+              state: "open",
+              draft: false,
+              mergeable: true,
+              requested_reviewers: requested.map((reviewer) => ({
+                login: reviewer.githubName,
+              })),
+              user: { login: "the-author" },
+            },
+      })
+    );
+
+  const approvalBy = (reviewer: any) => ({
+    id: 1,
+    user: { login: reviewer.githubName },
+    state: "APPROVED",
+    submitted_at: "2026-09-02T21:05:00Z",
+  });
+
+  test("the one reviewer left holding the PR is retitled Blocking Review", async () => {
+    // Two peers, so the cascade summons nobody: only the review handler's
+    // own pass can retitle the one left.
+    mockLiveAsana([
+      pendingReview("review-peer", PEER.asanaId),
+      pendingReview("review-peer2", PEER2.asanaId),
+    ]);
+    githubGet.mockResolvedValue({ data: [] });
+
+    await handleReview(reviewBy(PEER.githubName, "approved", [PEER2]));
+
+    expect(renameOf("review-peer2")?.[1].data.name).toBe("Blocking Review");
+    expect(renameOf("review-peer")).toBeUndefined();
+  });
+
+  test("two reviewers still outstanding are both left as Review", async () => {
+    mockLiveAsana([
+      pendingReview("review-qa", QA.asanaId),
+      pendingReview("review-qa2", QA2.asanaId),
+    ]);
+    githubGet.mockResolvedValue({ data: [] });
+
+    await handleReview(reviewBy(PEER.githubName, "approved", [QA, QA2]));
+
+    expect(renames()).toHaveLength(0);
+  });
+
+  // GitHub fires one review_requested per reviewer, so the run for the first
+  // of two sees one subtask on the task while GitHub already lists both.
+  // Driven through the entry point: the handler adds the first reviewer and
+  // the re-check that follows it adds the second.
+  test("two reviewers requested together: the run for the first never names them the blocker", async () => {
+    mockLiveAsana([]);
+    githubPr([QA, QA2]);
+
+    await runSync({
+      eventName: "pull_request",
+      payload: {
+        action: "review_requested",
+        requested_reviewer: { login: QA.githubName },
+        pull_request: {
+          number: 42,
+          state: "open",
+          draft: false,
+          html_url: "https://github.com/nsquared-team/some-repo/pull/42",
+          body: "https://app.asana.com/0/123/111",
+          user: { login: "the-author" },
+          requested_reviewers: [
+            { login: QA.githubName },
+            { login: QA2.githubName },
+          ],
+        },
+        repository: { full_name: "nsquared-team/some-repo" },
+        sender: { login: "the-author" },
+      },
+    });
+
+    expect(setFailed).not.toHaveBeenCalled();
+    expect(
+      reviewCreates().map(([, body]: [string, any]) => body.data.name)
+    ).toEqual(["Review", "Review"]);
+    expect(renames()).toHaveLength(0);
+  });
+
+  test("a lone reviewer's subtask is created as Blocking Review, not renamed into it", async () => {
+    mockLiveAsana([]);
+
+    await handlePullRequest(
+      baseEvent({ action: "ready_for_review", requestedReviewers: [QA] })
+    );
+
+    expect(reviewCreates()).toHaveLength(1);
+    expect(reviewCreates()[0][1].data.name).toBe("Blocking Review");
+    expect(renames()).toHaveLength(0);
+  });
+
+  test("a reviewer GitHub stopped waiting on does not share the blocking title", async () => {
+    // QA2 only replied in a thread: that takes them off GitHub's list but is
+    // no verdict, so their subtask is still pending next to QA's.
+    mockLiveAsana([
+      pendingReview("review-qa", QA.asanaId),
+      pendingReview("review-qa2", QA2.asanaId),
+    ]);
+    githubPr([QA]);
+
+    await reconcileReviewState(
+      baseEvent({ eventName: "issue_comment", action: "created" })
+    );
+
+    expect(renameOf("review-qa")?.[1].data.name).toBe("Blocking Review");
+    expect(renameOf("review-qa2")).toBeUndefined();
+  });
+
+  test("a reviewer summoned back after a dismissal takes the blocking title off the other", async () => {
+    // QA2's approval was dismissed on GitHub and the dismissal re-requested
+    // them; this is the review_requested run that summons them back.
+    mockLiveAsana([pendingReview("review-qa", QA.asanaId, "Blocking Review")]);
+
+    await handlePullRequest(
+      baseEvent({
+        action: "review_requested",
+        requestedReviewers: [QA, QA2],
+        eventReviewer: QA2,
+      })
+    );
+
+    expect(reviewCreates()).toHaveLength(1);
+    expect(renameOf("review-qa")?.[1].data.name).toBe("Review");
+  });
+
+  test("summoning two reviewers in one run never names the first one the blocker", async () => {
+    mockLiveAsana([]);
+
+    await handlePullRequest(
+      baseEvent({ action: "ready_for_review", requestedReviewers: [QA, QA2] })
+    );
+
+    expect(reviewCreates()).toHaveLength(2);
+    expect(renames()).toHaveLength(0);
+  });
+
+  test("a changes-request clears the reviews without first naming one the blocker", async () => {
+    mockLiveAsana([
+      pendingReview("review-qa", QA.asanaId),
+      pendingReview("review-qa2", QA2.asanaId),
+    ]);
+
+    await handleReview(reviewBy(QA.githubName, "changes_requested", [QA2]));
+
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/review-qa2");
+    expect(renames()).toHaveLength(0);
+  });
+
+  test("the re-check retitles the review left pending after it mirrors an approval", async () => {
+    // QA2 approved while their subtask was still being created, so the
+    // approval reached nothing, and GitHub goes on waiting for QA alone. The
+    // re-check answers QA2's subtask itself, which leaves QA the last one.
+    mockLiveAsana([
+      pendingReview("review-qa", QA.asanaId),
+      pendingReview("review-qa2", QA2.asanaId),
+    ]);
+    githubPr([QA], [approvalBy(QA2)]);
+
+    await reconcileReviewState(
+      baseEvent({ eventName: "issue_comment", action: "created" })
+    );
+
+    expect(renameOf("review-qa")?.[1].data.name).toBe("Blocking Review");
+  });
+
+  test("the re-check mirroring an approval while another reviewer is still to be added names nobody the blocker", async () => {
+    mockLiveAsana([
+      pendingReview("review-qa", QA.asanaId),
+      pendingReview("review-qa2", QA2.asanaId),
+    ]);
+    githubPr([QA, QA3], [approvalBy(QA2)]);
+
+    await reconcileReviewState(
+      baseEvent({ eventName: "issue_comment", action: "created" })
+    );
+
+    expect(reviewCreates()).toHaveLength(1);
+    expect(renames()).toHaveLength(0);
+  });
+
+  test("the blocking title is taken back once GitHub waits on nobody", async () => {
+    // QA was taken off the PR. Nothing deletes their subtask, but it must
+    // stop saying the PR waits on them.
+    mockLiveAsana([pendingReview("review-qa", QA.asanaId, "Blocking Review")]);
+    githubPr([]);
+
+    await reconcileReviewState(
+      baseEvent({ eventName: "issue_comment", action: "created" })
+    );
+
+    expect(renameOf("review-qa")?.[1].data.name).toBe("Review");
+  });
+
+  test("the CI subtask is never retitled", async () => {
+    mockLiveAsana([pendingReview("review-qa", QA.asanaId), ciSubtask]);
+    githubGet.mockResolvedValue({ data: [] });
+
+    await handleReview(reviewBy(QA2.githubName, "approved", [QA]));
+
+    expect(renameOf("review-qa")?.[1].data.name).toBe("Blocking Review");
+    expect(renameOf("ci-1")).toBeUndefined();
+  });
+
+  test("an FYI review left by a merge is not retitled", async () => {
+    mockLiveAsana([
+      pendingReview("review-qa", QA.asanaId),
+      pendingReview("fyi-1", QA2.asanaId, "FYI Review - merged to master"),
+    ]);
+    githubGet.mockResolvedValue({ data: [] });
+
+    await handleReview(reviewBy(PEER.githubName, "approved", [QA]));
+
+    expect(renameOf("review-qa")?.[1].data.name).toBe("Blocking Review");
+    expect(renameOf("fyi-1")).toBeUndefined();
+  });
+
+  test("a title already correct is not rewritten", async () => {
+    mockLiveAsana([pendingReview("review-qa", QA.asanaId, "Blocking Review")]);
+    githubGet.mockResolvedValue({ data: [] });
+
+    await handleReview(reviewBy(QA2.githubName, "approved", [QA]));
+
+    expect(renames()).toHaveLength(0);
+  });
+
+  test("a merge relabels a blocking review as FYI like any other", async () => {
+    mockLiveAsana([pendingReview("review-qa", QA.asanaId, "Blocking Review")]);
+
+    await handlePullRequest(
+      baseEvent({
+        action: "closed",
+        prMerged: true,
+        prState: "closed",
+        prBaseRef: "master",
+      })
+    );
+
+    expect(renameOf("review-qa")?.[1].data.name).toBe(
+      "FYI Review - merged to master"
+    );
   });
 });

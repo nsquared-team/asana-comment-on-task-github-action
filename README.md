@@ -32,7 +32,7 @@ stateDiagram-v2
 | PR event | Task move | Notes |
 | --- | --- | --- |
 | Opened / reopened as draft, or converted to draft | → In Progress | Skipped if the task sits in a Blocked or Released section. Convert-to-draft also deletes pending "Review" subtasks (the CI subtask survives). |
-| Opened / reopened ready for review, marked ready for review, or review requested | → Testing / Review | Creates a pending "Review" approval subtask for the active reviewer tier. Draft PRs are ignored. Marking a PR ready and requesting a reviewer land as two runs in the same second, and both may create the subtask; the newer duplicate is deleted right after, so each reviewer ends up with exactly one. Moves the task even out of Blocked — a PR up for review is a real state change. |
+| Opened / reopened ready for review, marked ready for review, or review requested | → Testing / Review | Creates a pending "Review" approval subtask for the active reviewer tier — named "Blocking Review" instead while its reviewer is the only one GitHub is still waiting on (see below). Draft PRs are ignored. Marking a PR ready and requesting a reviewer land as two runs in the same second, and both may create the subtask; the newer duplicate is deleted right after, so each reviewer ends up with exactly one. Moves the task even out of Blocked — a PR up for review is a real state change. |
 | CI rejected (`comment-text: rejected`) | → Next | Pending review subtasks are deleted; the "Automated CI Testing" subtask records the verdict. Tasks in In Progress or Released sections stay put. |
 | CI approved after a rejection | → Testing / Review | Only when the PR is not a draft; review subtasks are recreated. |
 | Review: changes requested | → Next | Task is also reopened (marked incomplete). Tasks in In Progress or Released sections stay put. |
@@ -54,6 +54,16 @@ The rows above each mirror one transition. After any of them runs, the action re
 That is what makes Asana converge on the PR whatever order events arrive in — a conflict resolved, a webhook that never fired, two runs that overlapped. A task already in the right section is left where it is — Asana puts a moved task at the top of its section, so restating must never reshuffle the board. The re-check leaves a task a person has completed alone, respects Blocked, Done and the released columns, does nothing while GitHub has not computed mergeability yet, and skips CI-rejection and description-edit runs (the first has just parked the task on purpose, the second never touches Asana).
 
 Section names are matched per board; boards using "Blocked / Waiting" instead of "Blocked" (and similar variants) are both supported. A task in several projects is only moved when *none* of its sections is a protected one — a task parked in Blocked on one board is not quietly moved on another.
+
+### The last reviewer left is told they are the last
+
+A reviewer cannot tell from their own subtask whether the PR is waiting on them alone or on four other people as well, so the subtask says which: while its assignee is the only reviewer of the active tier GitHub is still waiting on it is named **"Blocking Review"**, and while others are outstanding alongside them every one is named **"Review"**.
+
+The name follows GitHub's list of requested reviewers, not the subtasks on the task. GitHub announces reviewers one event at a time, so the subtasks of two reviewers requested together reach Asana in separate runs; counting subtasks would tell the first reviewer they are the last until the second one's subtask lands. GitHub's list holds both from the start, so each subtask is created under the name it keeps. Where the two disagree GitHub wins: a reviewer who only replied in a thread is off GitHub's list while their subtask is still pending, so theirs stays "Review" and does not stop the other reviewer's from reading "Blocking Review".
+
+The name is restated each time the reviews change — whenever one is added or answered, and on the re-check after every event — rather than being set once and left. The list grows again as well as shrinks: a dismissed approval puts its reviewer back in the queue, and a subtask still claiming to be the last blocker would then be telling its assignee the PR waits on them alone when it does not. So a review whose assignee stops being the only one left is named back down to "Review".
+
+Only those two names are ever touched. The "Automated CI Testing" subtask is never renamed, and neither is a subtask a merge has already relabelled "FYI Review …" — nobody is waiting on that one. A merge relabels a "Blocking Review" to its FYI name like any other open review.
 
 ## Invocation modes
 

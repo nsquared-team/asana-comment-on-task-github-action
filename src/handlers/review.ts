@@ -219,20 +219,16 @@ const handleApprovalCascade = async (event: SyncEvent) => {
   const followers: string[] = [];
 
   if (approvedByPeer && !approvedByDev) {
-    for (const reviewer of devReviewers) {
-      followers.push(reviewer.asanaId);
-      for (const taskId of event.taskIds) {
-        await asana.addRequestedReview(taskId, reviewer, event.prUrl);
-      }
+    for (const reviewer of devReviewers) followers.push(reviewer.asanaId);
+    for (const taskId of event.taskIds) {
+      await asana.addRequestedReviews(taskId, devReviewers, event.prUrl);
     }
   }
 
   if (approvedByPeer && approvedByDev && !approvedByQa) {
-    for (const reviewer of qaReviewers) {
-      followers.push(reviewer.asanaId);
-      for (const taskId of event.taskIds) {
-        await asana.addRequestedReview(taskId, reviewer, event.prUrl);
-      }
+    for (const reviewer of qaReviewers) followers.push(reviewer.asanaId);
+    for (const taskId of event.taskIds) {
+      await asana.addRequestedReviews(taskId, qaReviewers, event.prUrl);
     }
   }
 
@@ -266,6 +262,7 @@ export const handleReview = async (event: SyncEvent) => {
 
   // Mirror the reviewer's verdict onto their approval subtask.
   if (event.action === "submitted" && SUBTASK_REVIEW_STATES.includes(verdict)) {
+    const activeTier = utils.pickReviewerTier(event.requestedReviewers);
     for (const taskId of event.taskIds) {
       const approvalSubtask = await asana.getApprovalSubtask(
         taskId,
@@ -276,6 +273,17 @@ export const handleReview = async (event: SyncEvent) => {
         await asana.updateApprovalSubtask(approvalSubtask.gid, {
           approval_status: verdict,
         });
+      }
+      // An approval takes its reviewer off GitHub's list without summoning
+      // anyone, so the add helper may never run: one of two peers signing off
+      // leaves a single reviewer holding the PR and nothing to retitle them.
+      // The re-check would, but it stands down while GitHub has yet to say the
+      // PR is mergeable. Only an approval leaves a pending subtask to retitle:
+      // a changes-request clears the whole set just below, and naming a
+      // blocker here only to delete it would notify the reviewer of a title
+      // that never mattered.
+      if (verdict === "approved") {
+        await asana.syncBlockingReviewTitles(taskId, activeTier);
       }
     }
   }
@@ -433,7 +441,7 @@ export const reconcileReviewState = async (event: SyncEvent) => {
     // answer. GitHub's verdict wins.
     for (const subtask of await asana.getAllApprovalSubtasks(taskId, otto)) {
       if (
-        subtask.name === "Review" &&
+        asana.isPendingReviewSubtask(subtask) &&
         approvedAsanaIds.includes(subtask.assignee?.gid)
       ) {
         await asana.updateApprovalSubtask(subtask.gid, {
@@ -441,6 +449,10 @@ export const reconcileReviewState = async (event: SyncEvent) => {
         });
       }
     }
+    // This read of GitHub's list is the fresh one, so it is where a title a
+    // handler set from a stale payload is put right - on the two exits below
+    // as well, which never reach the add helper.
+    await asana.syncBlockingReviewTitles(taskId, activeTier);
 
     if (fullyApproved) {
       await asana.moveTaskToSection(taskId, SECTIONS.APPROVED, leaveAlone);
@@ -448,8 +460,6 @@ export const reconcileReviewState = async (event: SyncEvent) => {
     }
     if (!activeTier.length) continue;
     await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, leaveAlone);
-    for (const reviewer of activeTier) {
-      await asana.addRequestedReview(taskId, reviewer, event.prUrl);
-    }
+    await asana.addRequestedReviews(taskId, activeTier, event.prUrl);
   }
 };
