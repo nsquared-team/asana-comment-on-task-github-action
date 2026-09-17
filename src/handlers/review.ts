@@ -132,8 +132,10 @@ const tallyReviews = (
 // `review_requested` and `reviewed` as timestamped entries - so it is what
 // decides, rather than a guess about which read was fresher.
 //
-// An unreadable timeline answers false: that leaves the approver dropped from
-// the requested list, which is the behaviour on the common path anyway.
+// An unreadable timeline answers true: the approver stays listed, as they did
+// before this check existed. The spare Review that costs is put right by the
+// next event's re-check; a task promoted past a live reviewer would sit in
+// Approved until that same re-check, and someone may merge on it meanwhile.
 const wasRerequestedAfterReview = async (
   event: SyncEvent,
   githubName: string
@@ -169,7 +171,7 @@ const wasRerequestedAfterReview = async (
   } catch (error) {
     // The timeline only sharpens a guess; losing it must not stall the sync.
     console.warn(`Failed to read the timeline for ${githubName}:`, error);
-    return false;
+    return true;
   }
   return Boolean(lastRequestedAt) && lastRequestedAt > lastReviewedAt;
 };
@@ -464,7 +466,7 @@ export const reconcileReviewState = async (event: SyncEvent) => {
   // is what settles. The stale entry and a genuine re-request put the same
   // login in the same list, so dropping it on the shape of the event alone
   // would promote the task to Approved while GitHub still waits on that
-  // reviewer - and nothing downstream repairs that.
+  // reviewer, and it would sit there until the next event's re-check.
   const isApprovalRun =
     event.eventName === "pull_request_review" &&
     event.action === "submitted" &&

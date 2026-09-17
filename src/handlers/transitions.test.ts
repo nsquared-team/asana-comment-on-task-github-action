@@ -2165,6 +2165,31 @@ describe("every event restates the review state", () => {
     expect(reviewCreates()).toHaveLength(0);
   });
 
+  // Without the timeline the approver stays on the list, as before this
+  // check: the spare Review is put right by the next re-check, a task
+  // promoted past a live reviewer would not be until then.
+  test("an unreadable timeline keeps the approver on the list", async () => {
+    mockAsana({ subtasks: [ciSubtask("approved")] });
+    mockGithub(readyPr(), [peerApproved]);
+    const answer = githubGet.getMockImplementation();
+    githubGet.mockImplementation((url: string) =>
+      url.includes("/timeline")
+        ? Promise.reject(new Error("timeline unreachable"))
+        : answer?.(url)
+    );
+    await reconcileReviewState(
+      baseEvent({
+        eventName: "pull_request_review",
+        action: "submitted",
+        reviewState: "approved",
+        username: PEER.githubName,
+      })
+    );
+    expect(movesTo("Approved")).toHaveLength(0);
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(1);
+  });
+
   test("a dismissed reviewer is not summoned again by the re-check", async () => {
     mockAsana();
     mockGithub(readyPr({ requested_reviewers: [] }), [
