@@ -19,6 +19,7 @@ export interface SyncEvent {
   isDraft: boolean;
   reviewId?: number;
   reviewState: string;
+  reviewSubmittedAt: string;
   reviewBody: string;
   commentUrl: string;
   rawCommentBody: string;
@@ -64,6 +65,7 @@ export const buildEvent = (context: any): SyncEvent => {
     isDraft: payload.pull_request?.draft || false,
     reviewId: payload.review?.id,
     reviewState: payload.review?.state || "",
+    reviewSubmittedAt: payload.review?.submitted_at || "",
     reviewBody: payload.review?.body || "",
     commentUrl: payload.comment?.html_url || payload.review?.html_url || "",
     rawCommentBody: payload.comment?.body || payload.review?.body || "",

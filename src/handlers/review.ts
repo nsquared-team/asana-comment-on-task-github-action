@@ -121,6 +121,51 @@ const tallyReviews = (
   return latestReviews;
 };
 
+// Whether GitHub asked this reviewer again after the review this run is for.
+//
+// `requested_reviewers` alone cannot answer it. GitHub takes a reviewer off
+// that list when they review and puts them back when they are re-requested,
+// but stamps no time on either, so the run for an approval sees one list that
+// names the approver and cannot tell which of the two put them there: a read
+// taken before GitHub caught up, or the author genuinely asking again. The
+// timeline is the only place a request carries a time, so it is what decides,
+// rather than a guess about which read was fresher. The review's own time is
+// the event's: a timeline that has not caught up on the review yet must not
+// read the request that preceded it as the newer fact.
+//
+// An unreadable timeline answers true: the approver stays listed, as they did
+// before this check existed. The spare Review that costs is put right by the
+// next event's re-check; a task promoted past a live reviewer would sit in
+// Approved until that same re-check, and someone may merge on it meanwhile.
+const wasRerequestedAfterReview = async (
+  event: SyncEvent,
+  githubName: string
+) => {
+  const timelineUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.ISSUES_URL}${event.prNumber}${REQUESTS.TIMELINE_URL}`;
+  let lastRequestedAt = "";
+  try {
+    for (let page = 1; ; page++) {
+      const entries = (await githubAxios.get(`${timelineUrl}&page=${page}`))
+        .data;
+      for (const entry of entries) {
+        if (entry.requested_reviewer?.login !== githubName) continue;
+        if (entry.event === "review_requested") {
+          lastRequestedAt = entry.created_at;
+        }
+        // A request GitHub withdrew is not a request, and the withdrawal is
+        // the later fact about that reviewer.
+        if (entry.event === "review_request_removed") lastRequestedAt = "";
+      }
+      if (entries.length < REQUESTS.TIMELINE_PAGE_SIZE) break;
+    }
+  } catch (error) {
+    // The timeline only sharpens a guess; losing it must not stall the sync.
+    console.warn(`Failed to read the timeline for ${githubName}:`, error);
+    return true;
+  }
+  return lastRequestedAt > event.reviewSubmittedAt;
+};
+
 // A dismissed review blocks its tier, but nothing summons its reviewer
 // back: they are no longer in requested_reviewers and their old subtask is
 // answered - so nobody re-requests them by hand and the tally deadlocks
@@ -182,8 +227,12 @@ const tierVerdict = (latestReviews: { [githubName: string]: any }) => {
 
 // A PR is fully approved only when every tier has signed off; approvals
 // cascade PEER_DEV -> DEV -> QA, creating the next tier's subtasks as the
-// previous tier completes.
-const handleApprovalCascade = async (event: SyncEvent) => {
+// previous tier completes. `requestedReviewers` is who GitHub still waits on
+// once this approval is in.
+const handleApprovalCascade = async (
+  event: SyncEvent,
+  requestedReviewers: any[]
+) => {
   const githubUrl = pullRequestUrl(event);
 
   // A conflicting PR has a diff nobody has reviewed yet - resolving the
@@ -202,17 +251,17 @@ const handleApprovalCascade = async (event: SyncEvent) => {
   const threadOpeners = await findThreadOpeners(githubUrl, reviews, author);
   const latestReviews = tallyReviews(
     reviews,
-    event.requestedReviewers,
+    requestedReviewers,
     author,
     threadOpeners
   );
   const { approvedByPeer, approvedByDev, approvedByQa, fullyApproved } =
     tierVerdict(latestReviews);
 
-  const devReviewers = event.requestedReviewers.filter(
+  const devReviewers = requestedReviewers.filter(
     (reviewer: any) => reviewer.team === "DEV"
   );
-  const qaReviewers = event.requestedReviewers.filter(
+  const qaReviewers = requestedReviewers.filter(
     (reviewer: any) => reviewer.team === "QA"
   );
 
@@ -260,9 +309,19 @@ export const handleReview = async (event: SyncEvent) => {
     threadOpeners
   ).toLowerCase();
 
+  // GitHub's payload still lists this review's reviewer as requested: the
+  // list is read before the review takes them off it. The review is the
+  // fresher fact, so its reviewer is not requested in this run. Counting
+  // them handed an approver a second Review as their approval was being
+  // mirrored: their just-answered subtask looked like a request nobody had
+  // served.
+  const stillRequested = event.requestedReviewers.filter(
+    (requested: any) => requested.githubName !== event.username
+  );
+
   // Mirror the reviewer's verdict onto their approval subtask.
   if (event.action === "submitted" && SUBTASK_REVIEW_STATES.includes(verdict)) {
-    const activeTier = utils.pickReviewerTier(event.requestedReviewers);
+    const activeTier = utils.pickReviewerTier(stillRequested);
     for (const taskId of event.taskIds) {
       const approvalSubtask = await asana.getApprovalSubtask(
         taskId,
@@ -328,7 +387,7 @@ export const handleReview = async (event: SyncEvent) => {
     event.reviewState === "approved" &&
     !event.isDraft
   ) {
-    cascadeFollowers = await handleApprovalCascade(event);
+    cascadeFollowers = await handleApprovalCascade(event, stillRequested);
   }
 
   // Followers: reviewer, active tier, mentioned users, cascade additions.
@@ -389,9 +448,35 @@ export const reconcileReviewState = async (event: SyncEvent) => {
   // a conflict alert would hand back the very subtasks the alert cleared.
   if (pullRequest.mergeable !== true) return;
 
-  const requestedLogins: string[] = (pullRequest.requested_reviewers || []).map(
-    (reviewer: any) => reviewer.login
-  );
+  // The run for an approval reads the PR before GitHub has taken the approver
+  // off its list; the approval is the fresher fact, so the approver is not
+  // requested in this run and is handed no second "Review".
+  //
+  // Unless GitHub really was asked to summon them again, which the timeline
+  // is what settles. The stale entry and a genuine re-request put the same
+  // login in the same list, so dropping it on the shape of the event alone
+  // would promote the task to Approved while GitHub still waits on that
+  // reviewer, and it would sit there until the next event's re-check.
+  //
+  // The timeline is read only when there is something to settle: a tier
+  // reviewer's approval with the fresh list still naming them. Once GitHub
+  // has caught up there is no entry to explain, and a bot's approval gates
+  // nothing whichever list it sits on, so neither makes the call.
+  const listed: any[] = pullRequest.requested_reviewers || [];
+  const approverStillListed =
+    event.eventName === "pull_request_review" &&
+    event.action === "submitted" &&
+    event.reviewState === "approved" &&
+    utils.isReviewTier(utils.findUserByGithubName(event.username)) &&
+    listed.some((reviewer: any) => reviewer.login === event.username);
+  const justApproved =
+    approverStillListed &&
+    !(await wasRerequestedAfterReview(event, event.username as string))
+      ? event.username
+      : undefined;
+  const requestedLogins: string[] = listed
+    .map((reviewer: any) => reviewer.login)
+    .filter((login: string) => login !== justApproved);
   const requestedReviewers = requestedLogins
     .map(utils.findUserByGithubName)
     .filter(Boolean);

@@ -118,6 +118,7 @@ const baseEvent = (overrides: Partial<SyncEvent> = {}): SyncEvent => ({
   prBaseRef: "main",
   isDraft: false,
   reviewState: "",
+  reviewSubmittedAt: "",
   reviewBody: "",
   commentUrl: "",
   rawCommentBody: "",
@@ -1712,17 +1713,28 @@ describe("every event restates the review state", () => {
   const mockGithub = (
     pullRequest: any,
     reviews: any[] = [],
-    comments: any[] = []
+    comments: any[] = [],
+    timeline: any[] = []
   ) =>
     githubGet.mockImplementation((url: string) =>
       Promise.resolve({
         data: url.endsWith("/reviews")
           ? reviews
+          : url.includes("/timeline")
+          ? timeline
           : url.includes("/comments")
           ? comments
           : pullRequest,
       })
     );
+
+  // GitHub stamps a review request only on the timeline, so that is where a
+  // re-request is told apart from a list the PR read had not caught up on.
+  const requestedOnTimeline = (login: string, at: string) => ({
+    event: "review_requested",
+    requested_reviewer: { login },
+    created_at: at,
+  });
 
   const reviewCreates = () =>
     asanaPost.mock.calls.filter(
@@ -1730,6 +1742,9 @@ describe("every event restates the review state", () => {
         url.includes("/tasks/111/subtasks") &&
         ["Review", "Blocking Review"].includes(payload.data.name)
     );
+
+  const timelineReads = () =>
+    githubGet.mock.calls.filter(([url]: [string]) => url.includes("/timeline"));
 
   const commentEvent = baseEvent({
     eventName: "issue_comment",
@@ -2000,6 +2015,15 @@ describe("every event restates the review state", () => {
     submitted_at: "2026-08-01T00:00:00Z",
   };
 
+  // The run for PEER's own approval; the review's time is the event's.
+  const peerApprovalRun = baseEvent({
+    eventName: "pull_request_review",
+    action: "submitted",
+    reviewState: "approved",
+    username: PEER.githubName,
+    reviewSubmittedAt: peerApproved.submitted_at,
+  });
+
   // The cascade ignores an approval given while the PR is conflicting, and
   // nothing re-ran the tally once the conflict was gone.
   test("every tier approved with nobody pending moves the task to Approved", async () => {
@@ -2063,6 +2087,112 @@ describe("every event restates the review state", () => {
     expect(movesTo("Testing / Review")).toHaveLength(1);
   });
 
+  // The run for an approval reads the PR before GitHub has taken the approver
+  // off its list; read as asked again, they were handed a fresh Review. The
+  // request predates the approval the run is for, so the entry is stale -
+  // and the timeline need not have caught up on the review itself to say so.
+  test("the run for an approval does not read its approver as asked again", async () => {
+    mockAsana({ subtasks: [ciSubtask("approved")] });
+    mockGithub(
+      readyPr(),
+      [peerApproved],
+      [],
+      [requestedOnTimeline(PEER.githubName, "2026-07-01T00:00:00Z")]
+    );
+    await reconcileReviewState(peerApprovalRun);
+    expect(reviewCreates()).toHaveLength(0);
+    expect(movesTo("Approved")).toHaveLength(1);
+  });
+
+  // The same two lists, and the opposite meaning: the request follows the
+  // approval, so the author really did ask again. Read as the stale case,
+  // this promoted the task to Approved while GitHub was still waiting on
+  // that reviewer.
+  test("an approver re-requested after their approval is still waited on", async () => {
+    mockAsana({ subtasks: [ciSubtask("approved")] });
+    mockGithub(
+      readyPr(),
+      [peerApproved],
+      [],
+      [requestedOnTimeline(PEER.githubName, "2026-08-02T00:00:00Z")]
+    );
+    await reconcileReviewState(peerApprovalRun);
+    expect(movesTo("Approved")).toHaveLength(0);
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(1);
+    expect(reviewCreates()[0][1].data.assignee).toBe(PEER.asanaId);
+  });
+
+  // A request GitHub withdrew is not a standing request, so the reviewer is
+  // not waited on and the stale-entry reading holds.
+  test("a re-request GitHub later withdrew does not hold the task in review", async () => {
+    mockAsana({ subtasks: [ciSubtask("approved")] });
+    mockGithub(
+      readyPr(),
+      [peerApproved],
+      [],
+      [
+        requestedOnTimeline(PEER.githubName, "2026-08-02T00:00:00Z"),
+        {
+          event: "review_request_removed",
+          requested_reviewer: { login: PEER.githubName },
+          created_at: "2026-08-03T00:00:00Z",
+        },
+      ]
+    );
+    await reconcileReviewState(peerApprovalRun);
+    expect(movesTo("Approved")).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(0);
+  });
+
+  // Without the timeline the approver stays on the list, as before this
+  // check: the spare Review is put right by the next re-check, a task
+  // promoted past a live reviewer would not be until then.
+  test("an unreadable timeline keeps the approver on the list", async () => {
+    mockAsana({ subtasks: [ciSubtask("approved")] });
+    mockGithub(readyPr(), [peerApproved]);
+    const answer = githubGet.getMockImplementation();
+    githubGet.mockImplementation((url: string) =>
+      url.includes("/timeline")
+        ? Promise.reject(new Error("timeline unreachable"))
+        : answer?.(url)
+    );
+    await reconcileReviewState(peerApprovalRun);
+    expect(movesTo("Approved")).toHaveLength(0);
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(1);
+  });
+
+  // Once GitHub has caught up there is no entry to explain, so the common
+  // path pays for no timeline read.
+  test("the run for an approval reads no timeline once the list has caught up", async () => {
+    mockAsana({ subtasks: [ciSubtask("approved")] });
+    mockGithub(readyPr({ requested_reviewers: [] }), [peerApproved]);
+    await reconcileReviewState(peerApprovalRun);
+    expect(movesTo("Approved")).toHaveLength(1);
+    expect(timelineReads()).toHaveLength(0);
+  });
+
+  // A bot's approval gates nothing whichever list it sits on, so there is
+  // nothing for the timeline to settle.
+  test("a bot's approval reads no timeline", async () => {
+    mockAsana({ subtasks: [ciSubtask("approved")] });
+    mockGithub(
+      readyPr({
+        requested_reviewers: [
+          { login: "otto-bot-git" },
+          { login: PEER.githubName },
+        ],
+      }),
+      [peerApproved]
+    );
+    await reconcileReviewState(
+      baseEvent({ ...peerApprovalRun, username: "otto-bot-git" })
+    );
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(timelineReads()).toHaveLength(0);
+  });
+
   test("a dismissed reviewer is not summoned again by the re-check", async () => {
     mockAsana();
     mockGithub(readyPr({ requested_reviewers: [] }), [
@@ -2085,6 +2215,17 @@ describe("the last pending review says it is blocking", () => {
     githubName: "aminabdulkhalek",
     asanaId: "1202393076412167",
     team: "PEER_DEV",
+  };
+
+  const DEV = {
+    githubName: "NatalieMac",
+    asanaId: "1208102635655720",
+    team: "DEV",
+  };
+  const DEV2 = {
+    githubName: "tylerdigital",
+    asanaId: "1992810427453",
+    team: "DEV",
   };
 
   const pendingReview = (
@@ -2175,6 +2316,41 @@ describe("the last pending review says it is blocking", () => {
 
     expect(renameOf("review-peer2")?.[1].data.name).toBe("Blocking Review");
     expect(renameOf("review-peer")).toBeUndefined();
+  });
+
+  // GitHub's payload for an approval still lists the approver as requested:
+  // the list is read before the approval takes them off it. Counted as
+  // requested, the approver's just-answered subtask read as a request nobody
+  // had served, and the cascade handed them a second Review.
+  test("the approver, still on the payload's list, is not handed a second Review", async () => {
+    mockLiveAsana([
+      pendingReview("review-dev", DEV.asanaId),
+      pendingReview("review-dev2", DEV2.asanaId),
+    ]);
+    githubPr([DEV, DEV2], [approvalBy(PEER), approvalBy(DEV)]);
+
+    await handleReview(reviewBy(DEV.githubName, "approved", [DEV, DEV2]));
+
+    expect(asanaPut).toHaveBeenCalledWith("/tasks/review-dev", {
+      data: { approval_status: "approved" },
+    });
+    expect(reviewCreates()).toHaveLength(0);
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+
+  // Two peers, so the cascade summons nobody and only the handler's own
+  // pass can retitle the one left - from the same stale list.
+  test("the approver, still on the payload's list, is not counted against the reviewer left", async () => {
+    mockLiveAsana([
+      pendingReview("review-peer", PEER.asanaId),
+      pendingReview("review-peer2", PEER2.asanaId),
+    ]);
+    githubPr([PEER, PEER2], [approvalBy(PEER)]);
+
+    await handleReview(reviewBy(PEER.githubName, "approved", [PEER, PEER2]));
+
+    expect(reviewCreates()).toHaveLength(0);
+    expect(renameOf("review-peer2")?.[1].data.name).toBe("Blocking Review");
   });
 
   test("two reviewers still outstanding are both left as Review", async () => {

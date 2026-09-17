@@ -16428,7 +16428,7 @@ exports.PR_DESCRIPTION = "pr-description";
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.REVIEWERS_URL = exports.REVIEW_COMMENTS_URL = exports.REVIEW_COMMENTS_PAGE_SIZE = exports.REVIEWS_URL = exports.PULLS_URL = exports.REPOS_URL = exports.BASE_GITHUB_URL = exports.ADD_TASK_URL = exports.ADD_FOLLOWERS_URL = exports.STORIES_LIST_PARAMS = exports.SUBTASKS_URL = exports.STORIES_URL = exports.SECTIONS_URL = exports.TASKS_URL = exports.PROJECTS_URL = exports.BASE_ASANA_URL = exports.IDEMPOTENT_METHODS = exports.MAX_RETRY_DELAY = exports.RETRY_DELAY = exports.RETRIES = void 0;
+exports.TIMELINE_URL = exports.TIMELINE_PAGE_SIZE = exports.ISSUES_URL = exports.REVIEWERS_URL = exports.REVIEW_COMMENTS_URL = exports.REVIEW_COMMENTS_PAGE_SIZE = exports.REVIEWS_URL = exports.PULLS_URL = exports.REPOS_URL = exports.BASE_GITHUB_URL = exports.ADD_TASK_URL = exports.ADD_FOLLOWERS_URL = exports.STORIES_LIST_PARAMS = exports.SUBTASKS_URL = exports.STORIES_URL = exports.SECTIONS_URL = exports.TASKS_URL = exports.PROJECTS_URL = exports.BASE_ASANA_URL = exports.IDEMPOTENT_METHODS = exports.MAX_RETRY_DELAY = exports.RETRY_DELAY = exports.RETRIES = void 0;
 exports.RETRIES = 3;
 exports.RETRY_DELAY = 1000;
 // Ceiling for a server-supplied Retry-After, so a long rate-limit window
@@ -16453,6 +16453,12 @@ exports.REVIEWS_URL = "/reviews";
 exports.REVIEW_COMMENTS_PAGE_SIZE = 100;
 exports.REVIEW_COMMENTS_URL = `/comments?per_page=${exports.REVIEW_COMMENTS_PAGE_SIZE}`;
 exports.REVIEWERS_URL = "/requested_reviewers";
+// The timeline hangs off the issues path, not pulls, and it is the only
+// place GitHub timestamps a review request - `requested_reviewers` is a bare
+// list with no times on it.
+exports.ISSUES_URL = "/issues/";
+exports.TIMELINE_PAGE_SIZE = 100;
+exports.TIMELINE_URL = `/timeline?per_page=${exports.TIMELINE_PAGE_SIZE}`;
 
 
 /***/ }),
@@ -16727,7 +16733,7 @@ const INPUTS = __importStar(__nccwpck_require__(2120));
 const utils = __importStar(__nccwpck_require__(8541));
 exports.CI_STATUSES = ["approved", "rejected", "edit_pr_description"];
 const buildEvent = (context) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0;
     const payload = context.payload;
     const pullRequest = payload.pull_request || payload.issue;
     const commentText = (0, core_1.getInput)(INPUTS.COMMENT_TEXT);
@@ -16753,16 +16759,17 @@ const buildEvent = (context) => {
         isDraft: ((_o = payload.pull_request) === null || _o === void 0 ? void 0 : _o.draft) || false,
         reviewId: (_p = payload.review) === null || _p === void 0 ? void 0 : _p.id,
         reviewState: ((_q = payload.review) === null || _q === void 0 ? void 0 : _q.state) || "",
-        reviewBody: ((_r = payload.review) === null || _r === void 0 ? void 0 : _r.body) || "",
-        commentUrl: ((_s = payload.comment) === null || _s === void 0 ? void 0 : _s.html_url) || ((_t = payload.review) === null || _t === void 0 ? void 0 : _t.html_url) || "",
-        rawCommentBody: ((_u = payload.comment) === null || _u === void 0 ? void 0 : _u.body) || ((_v = payload.review) === null || _v === void 0 ? void 0 : _v.body) || "",
-        commentPath: ((_w = payload.comment) === null || _w === void 0 ? void 0 : _w.path) || "",
-        commentLine: (_x = payload.comment) === null || _x === void 0 ? void 0 : _x.original_line,
+        reviewSubmittedAt: ((_r = payload.review) === null || _r === void 0 ? void 0 : _r.submitted_at) || "",
+        reviewBody: ((_s = payload.review) === null || _s === void 0 ? void 0 : _s.body) || "",
+        commentUrl: ((_t = payload.comment) === null || _t === void 0 ? void 0 : _t.html_url) || ((_u = payload.review) === null || _u === void 0 ? void 0 : _u.html_url) || "",
+        rawCommentBody: ((_v = payload.comment) === null || _v === void 0 ? void 0 : _v.body) || ((_w = payload.review) === null || _w === void 0 ? void 0 : _w.body) || "",
+        commentPath: ((_x = payload.comment) === null || _x === void 0 ? void 0 : _x.path) || "",
+        commentLine: (_y = payload.comment) === null || _y === void 0 ? void 0 : _y.original_line,
         // "file" for a whole-file review comment, "line" otherwise. GitHub still
         // reports original_line as 1 on a file-level comment, so this is the only
         // field that tells the two apart.
-        commentSubjectType: ((_y = payload.comment) === null || _y === void 0 ? void 0 : _y.subject_type) || "",
-        commentInReplyTo: (_z = payload.comment) === null || _z === void 0 ? void 0 : _z.in_reply_to_id,
+        commentSubjectType: ((_z = payload.comment) === null || _z === void 0 ? void 0 : _z.subject_type) || "",
+        commentInReplyTo: (_0 = payload.comment) === null || _0 === void 0 ? void 0 : _0.in_reply_to_id,
         username,
         requestedReviewers,
         eventReviewer: payload.requested_reviewer
@@ -17504,6 +17511,52 @@ const tallyReviews = (reviews, requestedReviewers, author, threadOpeners) => {
     }
     return latestReviews;
 };
+// Whether GitHub asked this reviewer again after the review this run is for.
+//
+// `requested_reviewers` alone cannot answer it. GitHub takes a reviewer off
+// that list when they review and puts them back when they are re-requested,
+// but stamps no time on either, so the run for an approval sees one list that
+// names the approver and cannot tell which of the two put them there: a read
+// taken before GitHub caught up, or the author genuinely asking again. The
+// timeline is the only place a request carries a time, so it is what decides,
+// rather than a guess about which read was fresher. The review's own time is
+// the event's: a timeline that has not caught up on the review yet must not
+// read the request that preceded it as the newer fact.
+//
+// An unreadable timeline answers true: the approver stays listed, as they did
+// before this check existed. The spare Review that costs is put right by the
+// next event's re-check; a task promoted past a live reviewer would sit in
+// Approved until that same re-check, and someone may merge on it meanwhile.
+const wasRerequestedAfterReview = (event, githubName) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
+    const timelineUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.ISSUES_URL}${event.prNumber}${REQUESTS.TIMELINE_URL}`;
+    let lastRequestedAt = "";
+    try {
+        for (let page = 1;; page++) {
+            const entries = (yield githubAxios_1.default.get(`${timelineUrl}&page=${page}`))
+                .data;
+            for (const entry of entries) {
+                if (((_a = entry.requested_reviewer) === null || _a === void 0 ? void 0 : _a.login) !== githubName)
+                    continue;
+                if (entry.event === "review_requested") {
+                    lastRequestedAt = entry.created_at;
+                }
+                // A request GitHub withdrew is not a request, and the withdrawal is
+                // the later fact about that reviewer.
+                if (entry.event === "review_request_removed")
+                    lastRequestedAt = "";
+            }
+            if (entries.length < REQUESTS.TIMELINE_PAGE_SIZE)
+                break;
+        }
+    }
+    catch (error) {
+        // The timeline only sharpens a guess; losing it must not stall the sync.
+        console.warn(`Failed to read the timeline for ${githubName}:`, error);
+        return true;
+    }
+    return lastRequestedAt > event.reviewSubmittedAt;
+});
 // A dismissed review blocks its tier, but nothing summons its reviewer
 // back: they are no longer in requested_reviewers and their old subtask is
 // answered - so nobody re-requests them by hand and the tally deadlocks
@@ -17562,9 +17615,10 @@ const tierVerdict = (latestReviews) => {
 };
 // A PR is fully approved only when every tier has signed off; approvals
 // cascade PEER_DEV -> DEV -> QA, creating the next tier's subtasks as the
-// previous tier completes.
-const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a;
+// previous tier completes. `requestedReviewers` is who GitHub still waits on
+// once this approval is in.
+const handleApprovalCascade = (event, requestedReviewers) => __awaiter(void 0, void 0, void 0, function* () {
+    var _b;
     const githubUrl = pullRequestUrl(event);
     // A conflicting PR has a diff nobody has reviewed yet - resolving the
     // conflict writes it. So while the conflict stands the cascade neither
@@ -17576,14 +17630,14 @@ const handleApprovalCascade = (event) => __awaiter(void 0, void 0, void 0, funct
     const pullRequestResponse = yield githubAxios_1.default.get(githubUrl);
     if (pullRequestResponse.data.mergeable === false)
         return [];
-    const author = (_a = pullRequestResponse.data.user) === null || _a === void 0 ? void 0 : _a.login;
+    const author = (_b = pullRequestResponse.data.user) === null || _b === void 0 ? void 0 : _b.login;
     const reviews = (yield githubAxios_1.default.get(`${githubUrl}${REQUESTS.REVIEWS_URL}`))
         .data;
     const threadOpeners = yield findThreadOpeners(githubUrl, reviews, author);
-    const latestReviews = tallyReviews(reviews, event.requestedReviewers, author, threadOpeners);
+    const latestReviews = tallyReviews(reviews, requestedReviewers, author, threadOpeners);
     const { approvedByPeer, approvedByDev, approvedByQa, fullyApproved } = tierVerdict(latestReviews);
-    const devReviewers = event.requestedReviewers.filter((reviewer) => reviewer.team === "DEV");
-    const qaReviewers = event.requestedReviewers.filter((reviewer) => reviewer.team === "QA");
+    const devReviewers = requestedReviewers.filter((reviewer) => reviewer.team === "DEV");
+    const qaReviewers = requestedReviewers.filter((reviewer) => reviewer.team === "QA");
     const followers = [];
     if (approvedByPeer && !approvedByDev) {
         for (const reviewer of devReviewers)
@@ -17616,9 +17670,16 @@ const handleReview = (event) => __awaiter(void 0, void 0, void 0, function* () {
     };
     const threadOpeners = yield findThreadOpeners(pullRequestUrl(event), [review], event.prAuthor);
     const verdict = verdictOf(review, event.prAuthor, threadOpeners).toLowerCase();
+    // GitHub's payload still lists this review's reviewer as requested: the
+    // list is read before the review takes them off it. The review is the
+    // fresher fact, so its reviewer is not requested in this run. Counting
+    // them handed an approver a second Review as their approval was being
+    // mirrored: their just-answered subtask looked like a request nobody had
+    // served.
+    const stillRequested = event.requestedReviewers.filter((requested) => requested.githubName !== event.username);
     // Mirror the reviewer's verdict onto their approval subtask.
     if (event.action === "submitted" && SUBTASK_REVIEW_STATES.includes(verdict)) {
-        const activeTier = utils.pickReviewerTier(event.requestedReviewers);
+        const activeTier = utils.pickReviewerTier(stillRequested);
         for (const taskId of event.taskIds) {
             const approvalSubtask = yield asana.getApprovalSubtask(taskId, false, reviewer);
             if (approvalSubtask) {
@@ -17665,7 +17726,7 @@ const handleReview = (event) => __awaiter(void 0, void 0, void 0, function* () {
     if (event.action === "submitted" &&
         event.reviewState === "approved" &&
         !event.isDraft) {
-        cascadeFollowers = yield handleApprovalCascade(event);
+        cascadeFollowers = yield handleApprovalCascade(event, stillRequested);
     }
     // Followers: reviewer, active tier, mentioned users, cascade additions.
     const { body, mentionedAsanaIds } = (0, comment_1.buildFormattedBody)(event);
@@ -17716,7 +17777,7 @@ exports.handleReview = handleReview;
 // than trusting the payload: a parallel run may have moved the PR on since
 // the webhook fired.
 const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, function* () {
-    var _b, _c;
+    var _c, _d;
     if (!event.taskIds.length || !event.isPullRequest)
         return;
     const githubUrl = pullRequestUrl(event);
@@ -17728,7 +17789,33 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
     // a conflict alert would hand back the very subtasks the alert cleared.
     if (pullRequest.mergeable !== true)
         return;
-    const requestedLogins = (pullRequest.requested_reviewers || []).map((reviewer) => reviewer.login);
+    // The run for an approval reads the PR before GitHub has taken the approver
+    // off its list; the approval is the fresher fact, so the approver is not
+    // requested in this run and is handed no second "Review".
+    //
+    // Unless GitHub really was asked to summon them again, which the timeline
+    // is what settles. The stale entry and a genuine re-request put the same
+    // login in the same list, so dropping it on the shape of the event alone
+    // would promote the task to Approved while GitHub still waits on that
+    // reviewer, and it would sit there until the next event's re-check.
+    //
+    // The timeline is read only when there is something to settle: a tier
+    // reviewer's approval with the fresh list still naming them. Once GitHub
+    // has caught up there is no entry to explain, and a bot's approval gates
+    // nothing whichever list it sits on, so neither makes the call.
+    const listed = pullRequest.requested_reviewers || [];
+    const approverStillListed = event.eventName === "pull_request_review" &&
+        event.action === "submitted" &&
+        event.reviewState === "approved" &&
+        utils.isReviewTier(utils.findUserByGithubName(event.username)) &&
+        listed.some((reviewer) => reviewer.login === event.username);
+    const justApproved = approverStillListed &&
+        !(yield wasRerequestedAfterReview(event, event.username))
+        ? event.username
+        : undefined;
+    const requestedLogins = listed
+        .map((reviewer) => reviewer.login)
+        .filter((login) => login !== justApproved);
     const requestedReviewers = requestedLogins
         .map(utils.findUserByGithubName)
         .filter(Boolean);
@@ -17737,7 +17824,7 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
     // reviewer - whoever made it, since the review handler parks on any.
     const reviews = (yield githubAxios_1.default.get(`${githubUrl}${REQUESTS.REVIEWS_URL}`))
         .data;
-    const author = (_b = pullRequest.user) === null || _b === void 0 ? void 0 : _b.login;
+    const author = (_c = pullRequest.user) === null || _c === void 0 ? void 0 : _c.login;
     const threadOpeners = yield findThreadOpeners(githubUrl, reviews, author);
     const latest = latestDefinitiveReviews(reviews, author, threadOpeners);
     const changesRequestStands = Object.keys(latest).some((login) => latest[login].state === "CHANGES_REQUESTED" &&
@@ -17769,7 +17856,7 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
         // answer. GitHub's verdict wins.
         for (const subtask of yield asana.getAllApprovalSubtasks(taskId, otto)) {
             if (asana.isPendingReviewSubtask(subtask) &&
-                approvedAsanaIds.includes((_c = subtask.assignee) === null || _c === void 0 ? void 0 : _c.gid)) {
+                approvedAsanaIds.includes((_d = subtask.assignee) === null || _d === void 0 ? void 0 : _d.gid)) {
                 yield asana.updateApprovalSubtask(subtask.gid, {
                     approval_status: "approved",
                 });
