@@ -66,7 +66,8 @@ export const handlePullRequest = async (event: SyncEvent) => {
       await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
       // Each review_requested event carries exactly one reviewer; creating
       // only that reviewer's subtask keeps parallel workflow runs from
-      // duplicating each other's subtasks.
+      // duplicating each other's subtasks. Its name still reads the whole
+      // tier: GitHub lists everyone requested alongside them.
       if (
         event.eventReviewer &&
         activeTier.some(
@@ -77,7 +78,8 @@ export const handlePullRequest = async (event: SyncEvent) => {
         await asana.addRequestedReviews(
           taskId,
           [event.eventReviewer],
-          event.prUrl
+          event.prUrl,
+          activeTier
         );
       }
     }

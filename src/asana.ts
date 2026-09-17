@@ -144,9 +144,9 @@ export const deleteApprovalTasks = async (approvalSubtasks: any[]) => {
 };
 
 // A pending review subtask goes by one of two names: "Blocking Review" while
-// it is the only one left outstanding, "Review" while others are still
-// pending alongside it. Both are the same subtask in the same state - the
-// name only tells its assignee whether the PR is waiting on them alone.
+// its assignee is the only reviewer GitHub is still waiting on, "Review"
+// otherwise. Both are the same subtask in the same state - the name only
+// tells its assignee whether the PR is waiting on them alone.
 export const REVIEW_NAME = "Review";
 export const BLOCKING_REVIEW_NAME = "Blocking Review";
 const CI_SUBTASK_NAME = "Automated CI Testing";
@@ -157,32 +157,38 @@ const isPendingReviewName = (name?: string) =>
 export const isPendingReviewSubtask = (subtask: any) =>
   isPendingReviewName(subtask?.name);
 
-// The blocking title is derived from the live set of pending reviews rather
-// than set once when the last one is reached, because the set grows again as
-// well as shrinks: a dismissed approval puts its reviewer back in the queue,
-// and a subtask still claiming to be the final blocker would be telling its
-// assignee the PR is waiting on them alone when it is not. Recomputing keeps
-// the name honest in both directions. It runs once after a batch of reviews
-// is added and once after a review is answered - never after each single
-// change - so a run that summons two reviewers does not name the first one
-// the last blocker on its way to creating the second. Only the two pending
-// names are touched, so the CI subtask and the FYI labels a merge leaves
-// behind are never retitled.
-export const syncBlockingReviewTitles = async (taskId: string) => {
+// `outstanding` is the active-tier reviewers GitHub still lists as requested.
+const reviewNameFor = (assigneeGid: string | undefined, outstanding: any[]) =>
+  outstanding.length === 1 && outstanding[0].asanaId === assigneeGid
+    ? BLOCKING_REVIEW_NAME
+    : REVIEW_NAME;
+
+// The blocking title follows GitHub's list of who is still being waited on,
+// not the subtasks on the task. The subtasks of one summons arrive over
+// several steps and several runs - GitHub fires one review_requested per
+// reviewer - so counting them would name the first of two reviewers the last
+// blocker until the second one lands. GitHub knows the whole list before any
+// subtask exists. The name is restated rather than set once because the list
+// grows again as well as shrinks: a dismissed approval puts its reviewer back
+// in the queue, and a subtask still claiming to be the final blocker would be
+// telling its assignee the PR waits on them alone when it does not. Only the
+// two pending names are touched, so the CI subtask and the FYI labels a merge
+// leaves behind are never retitled.
+export const syncBlockingReviewTitles = async (
+  taskId: string,
+  outstanding: any[]
+) => {
   const subtasks = await getAllApprovalSubtasks(taskId, ottoUser());
-  const pendingReviews = subtasks.filter(isPendingReviewSubtask);
-
-  const wantedName =
-    pendingReviews.length === 1 ? BLOCKING_REVIEW_NAME : REVIEW_NAME;
-
-  for (const subtask of pendingReviews) {
+  for (const subtask of subtasks.filter(isPendingReviewSubtask)) {
+    const wantedName = reviewNameFor(subtask.assignee?.gid, outstanding);
     if (subtask.name === wantedName) continue;
     await updateApprovalSubtask(subtask.gid, { name: wantedName });
   }
 };
 
-// Reviewer approval subtasks are named "Review"; the CI verdict subtask is
-// named "Automated CI Testing" and must survive review cleanups.
+// Reviewer approval subtasks are named "Review" or "Blocking Review"; the CI
+// verdict subtask is named "Automated CI Testing" and must survive review
+// cleanups.
 export const deleteReviewSubtasks = async (taskId: string) => {
   const subtasks = await getAllApprovalSubtasks(taskId, ottoUser());
   const reviewSubtasks = subtasks.filter(
@@ -308,11 +314,11 @@ const isReviewSubtask = (subtask: any) =>
 
 // Asana enforces no uniqueness on subtasks, and two sync runs for one PR
 // routinely overlap (ready_for_review and review_requested land in the same
-// second), so both pass the existence check in addRequestedReview before
+// second), so both pass the existence check in addRequestedReviews before
 // either create is visible. Re-reading after the create and keeping only the
 // oldest pending review per assignee makes the racers converge: each sees the
 // same set and picks the same survivor, and a delete that loses the race 404s
-// and is skipped. It counts both names a review goes by, because the racing
+// and is skipped. It counts every name a review goes by, because the racing
 // run may be the merge that renames it.
 const deleteDuplicateReviewSubtasks = async (taskId: string, reviewer: any) => {
   const subtasks = await getAllApprovalSubtasks(taskId, ottoUser());
@@ -325,26 +331,35 @@ const deleteDuplicateReviewSubtasks = async (taskId: string, reviewer: any) => {
   await deleteApprovalTasks(reviews.slice(1));
 };
 
-// Takes the whole batch so the blocking title is settled once, after every
-// reviewer is in: settling it per reviewer named the first one the last
-// blocker and then took it back. Nothing added means nothing to retitle.
+// `outstanding` is every active-tier reviewer GitHub is still waiting on: the
+// batch itself, except on review_requested, which adds one reviewer of a tier
+// that may hold several. A subtask is created under the name it keeps, and
+// the ones already there are brought in line once the batch is in. Nothing
+// added means nothing to retitle.
 export const addRequestedReviews = async (
   taskId: string,
   reviewers: any[],
-  pullRequestUrl: string
+  pullRequestUrl: string,
+  outstanding = reviewers
 ) => {
   if (!reviewers.length) return;
   for (const reviewer of reviewers) {
     const existing = await getApprovalSubtask(taskId, false, reviewer);
     if (!existing) {
       const notes = `<a href='${pullRequestUrl}'> Click Here To Start Your Review </a>`;
-      await addApprovalTask(taskId, reviewer, REVIEW_NAME, "pending", notes);
+      await addApprovalTask(
+        taskId,
+        reviewer,
+        reviewNameFor(reviewer.asanaId, outstanding),
+        "pending",
+        notes
+      );
     }
     // Runs on the existing path too, so a task that already carries a
     // duplicate pair heals on the next event that touches the reviewer.
     await deleteDuplicateReviewSubtasks(taskId, reviewer);
   }
-  await syncBlockingReviewTitles(taskId);
+  await syncBlockingReviewTitles(taskId, outstanding);
 };
 
 // Relabelling only ever reached reviewers the task already carried a subtask

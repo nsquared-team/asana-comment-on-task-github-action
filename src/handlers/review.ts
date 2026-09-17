@@ -262,6 +262,7 @@ export const handleReview = async (event: SyncEvent) => {
 
   // Mirror the reviewer's verdict onto their approval subtask.
   if (event.action === "submitted" && SUBTASK_REVIEW_STATES.includes(verdict)) {
+    const activeTier = utils.pickReviewerTier(event.requestedReviewers);
     for (const taskId of event.taskIds) {
       const approvalSubtask = await asana.getApprovalSubtask(
         taskId,
@@ -273,14 +274,17 @@ export const handleReview = async (event: SyncEvent) => {
           approval_status: verdict,
         });
       }
-      // Answering a review drops it out of the pending set without adding a
-      // subtask, so the add helper cannot see it; left to that helper, the
-      // commonest case of all - one of two reviewers signing off, leaving a
-      // single reviewer holding the PR - would never retitle anything. Only
-      // an approval leaves a pending subtask to retitle: a changes-request
-      // clears the whole set just below, and naming a blocker here only to
-      // delete it would notify the reviewer of a title that never mattered.
-      if (verdict === "approved") await asana.syncBlockingReviewTitles(taskId);
+      // An approval takes its reviewer off GitHub's list without summoning
+      // anyone, so the add helper may never run: one of two peers signing off
+      // leaves a single reviewer holding the PR and nothing to retitle them.
+      // The re-check would, but it stands down while GitHub has yet to say the
+      // PR is mergeable. Only an approval leaves a pending subtask to retitle:
+      // a changes-request clears the whole set just below, and naming a
+      // blocker here only to delete it would notify the reviewer of a title
+      // that never mattered.
+      if (verdict === "approved") {
+        await asana.syncBlockingReviewTitles(taskId, activeTier);
+      }
     }
   }
 
@@ -445,9 +449,10 @@ export const reconcileReviewState = async (event: SyncEvent) => {
         });
       }
     }
-    // Answering verdicts in bulk shrinks the pending set the same way a
-    // single review does, and for the same reason needs saying so here.
-    await asana.syncBlockingReviewTitles(taskId);
+    // This read of GitHub's list is the fresh one, so it is where a title a
+    // handler set from a stale payload is put right - on the two exits below
+    // as well, which never reach the add helper.
+    await asana.syncBlockingReviewTitles(taskId, activeTier);
 
     if (fullyApproved) {
       await asana.moveTaskToSection(taskId, SECTIONS.APPROVED, leaveAlone);
