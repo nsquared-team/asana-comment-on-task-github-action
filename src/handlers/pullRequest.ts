@@ -2,6 +2,7 @@ import * as SECTIONS from "../constants/sections";
 import * as asana from "../asana";
 import * as utils from "../utils";
 import { postCommentToTasks } from "./comment";
+import { reviewersToCall } from "./review";
 import { SyncEvent } from "../event";
 
 // No live PR to track (draft, or closed without merging) means the task is
@@ -17,9 +18,10 @@ const moveTasksToInProgress = async (event: SyncEvent) => {
 };
 
 const moveTasksToReview = async (event: SyncEvent, activeTier: any[]) => {
+  const reviewers = await reviewersToCall(event, activeTier);
   for (const taskId of event.taskIds) {
     await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
-    await asana.addRequestedReviews(taskId, activeTier, event.prUrl);
+    await asana.addRequestedReviews(taskId, reviewers, event.prUrl);
   }
 };
 
@@ -62,26 +64,27 @@ export const handlePullRequest = async (event: SyncEvent) => {
 
   if (event.action === "review_requested") {
     if (event.isDraft) return;
+    // Each review_requested event carries exactly one reviewer; creating
+    // only that reviewer's subtask keeps parallel workflow runs from
+    // duplicating each other's subtasks. Its name still reads the whole
+    // tier: GitHub lists everyone requested alongside them.
+    const summoned =
+      event.eventReviewer &&
+      activeTier.some(
+        (reviewer: any) =>
+          reviewer.githubName === event.eventReviewer.githubName
+      )
+        ? [event.eventReviewer]
+        : [];
+    const reviewers = await reviewersToCall(event, summoned);
     for (const taskId of event.taskIds) {
       await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
-      // Each review_requested event carries exactly one reviewer; creating
-      // only that reviewer's subtask keeps parallel workflow runs from
-      // duplicating each other's subtasks. Its name still reads the whole
-      // tier: GitHub lists everyone requested alongside them.
-      if (
-        event.eventReviewer &&
-        activeTier.some(
-          (reviewer: any) =>
-            reviewer.githubName === event.eventReviewer.githubName
-        )
-      ) {
-        await asana.addRequestedReviews(
-          taskId,
-          [event.eventReviewer],
-          event.prUrl,
-          activeTier
-        );
-      }
+      await asana.addRequestedReviews(
+        taskId,
+        reviewers,
+        event.prUrl,
+        activeTier
+      );
     }
     return;
   }

@@ -16967,6 +16967,7 @@ const REQUESTS = __importStar(__nccwpck_require__(4291));
 const SECTIONS = __importStar(__nccwpck_require__(6081));
 const asana = __importStar(__nccwpck_require__(7369));
 const utils = __importStar(__nccwpck_require__(8541));
+const review_1 = __nccwpck_require__(6433);
 // CI runs fire on these pull_request actions in the consumer workflows.
 const CI_ACTIONS = ["opened", "synchronize", "reopened", "ready_for_review"];
 const CI_SUBTASK_NAME = "Automated CI Testing";
@@ -17021,7 +17022,7 @@ const handleCiStatus = (event) => __awaiter(void 0, void 0, void 0, function* ()
                     SECTIONS.APPROVED,
                     ...SECTIONS.RELEASED_SECTIONS,
                 ]);
-                yield asana.addRequestedReviews(taskId, activeTier, event.prUrl);
+                yield asana.addRequestedReviews(taskId, yield (0, review_1.reviewersToCall)(event, activeTier), event.prUrl);
             }
             // CI broke: green -> red. Review requests are stale; task goes back.
             if (ciSubtask.approval_status === "approved" &&
@@ -17253,6 +17254,7 @@ const SECTIONS = __importStar(__nccwpck_require__(6081));
 const asana = __importStar(__nccwpck_require__(7369));
 const utils = __importStar(__nccwpck_require__(8541));
 const comment_1 = __nccwpck_require__(32);
+const review_1 = __nccwpck_require__(6433);
 // No live PR to track (draft, or closed without merging) means the task is
 // back with its author.
 const moveTasksToInProgress = (event) => __awaiter(void 0, void 0, void 0, function* () {
@@ -17261,9 +17263,10 @@ const moveTasksToInProgress = (event) => __awaiter(void 0, void 0, void 0, funct
     }
 });
 const moveTasksToReview = (event, activeTier) => __awaiter(void 0, void 0, void 0, function* () {
+    const reviewers = yield (0, review_1.reviewersToCall)(event, activeTier);
     for (const taskId of event.taskIds) {
         yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
-        yield asana.addRequestedReviews(taskId, activeTier, event.prUrl);
+        yield asana.addRequestedReviews(taskId, reviewers, event.prUrl);
     }
 });
 const HANDLED_ACTIONS = [
@@ -17303,16 +17306,18 @@ const handlePullRequest = (event) => __awaiter(void 0, void 0, void 0, function*
     if (event.action === "review_requested") {
         if (event.isDraft)
             return;
+        // Each review_requested event carries exactly one reviewer; creating
+        // only that reviewer's subtask keeps parallel workflow runs from
+        // duplicating each other's subtasks. Its name still reads the whole
+        // tier: GitHub lists everyone requested alongside them.
+        const summoned = event.eventReviewer &&
+            activeTier.some((reviewer) => reviewer.githubName === event.eventReviewer.githubName)
+            ? [event.eventReviewer]
+            : [];
+        const reviewers = yield (0, review_1.reviewersToCall)(event, summoned);
         for (const taskId of event.taskIds) {
             yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
-            // Each review_requested event carries exactly one reviewer; creating
-            // only that reviewer's subtask keeps parallel workflow runs from
-            // duplicating each other's subtasks. Its name still reads the whole
-            // tier: GitHub lists everyone requested alongside them.
-            if (event.eventReviewer &&
-                activeTier.some((reviewer) => reviewer.githubName === event.eventReviewer.githubName)) {
-                yield asana.addRequestedReviews(taskId, [event.eventReviewer], event.prUrl, activeTier);
-            }
+            yield asana.addRequestedReviews(taskId, reviewers, event.prUrl, activeTier);
         }
         return;
     }
@@ -17415,7 +17420,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.reconcileReviewState = exports.handleReview = void 0;
+exports.reconcileReviewState = exports.handleReview = exports.reviewersToCall = void 0;
 const githubAxios_1 = __importDefault(__nccwpck_require__(1125));
 const REQUESTS = __importStar(__nccwpck_require__(4291));
 const SECTIONS = __importStar(__nccwpck_require__(6081));
@@ -17425,7 +17430,37 @@ const format = __importStar(__nccwpck_require__(6264));
 const comment_1 = __nccwpck_require__(32);
 const SUBTASK_REVIEW_STATES = ["approved", "pending", "changes_requested"];
 const DEFINITIVE_REVIEW_STATES = ["CHANGES_REQUESTED", "APPROVED", "DISMISSED"];
+const OTTO_LOGIN = "otto-bot-git";
 const pullRequestUrl = (event) => `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
+const latestReviewBy = (reviews, login) => reviews.reduce((latest, review) => review.user.login === login &&
+    (!latest || latest.submitted_at < review.submitted_at)
+    ? review
+    : latest, undefined);
+// Otto reviews before the peer developers on the PRs it is added to. While
+// GitHub still waits on it, or its last review was anything but an approval -
+// a changes-request, a comment-only report, a dismissed approval - the PR may
+// still need work, so no human tier is handed a Review subtask and the task
+// is not promoted. A PR otto was never asked onto and has never reviewed is
+// not waiting on it: the cascade runs PEER_DEV -> DEV -> QA as before. Asking
+// otto again after it approved closes the stage until it answers; the
+// subtasks already handed out stay. Nothing here re-requests otto - the
+// author does, once the PR is ready for another pass.
+const awaitingOtto = (reviews, requestedReviewers) => {
+    if (requestedReviewers.some((r) => r.githubName === OTTO_LOGIN)) {
+        return true;
+    }
+    const latest = latestReviewBy(reviews, OTTO_LOGIN);
+    return Boolean(latest) && latest.state !== "APPROVED";
+};
+// The handlers that hand out reviews from the webhook payload alone read the
+// reviews here, and only when there is someone to call.
+const reviewersToCall = (event, reviewers) => __awaiter(void 0, void 0, void 0, function* () {
+    if (!reviewers.length)
+        return reviewers;
+    const reviews = (yield githubAxios_1.default.get(`${pullRequestUrl(event)}${REQUESTS.REVIEWS_URL}`)).data;
+    return awaitingOtto(reviews, event.requestedReviewers) ? [] : reviewers;
+});
+exports.reviewersToCall = reviewersToCall;
 // A "Comment" review from a tier reviewer is a rejection here: they looked
 // and did not approve, so the author answers it and re-requests them, exactly
 // as for changes requested. GitHub files every inline comment as a review of
@@ -17633,6 +17668,10 @@ const handleApprovalCascade = (event, requestedReviewers) => __awaiter(void 0, v
     const author = (_b = pullRequestResponse.data.user) === null || _b === void 0 ? void 0 : _b.login;
     const reviews = (yield githubAxios_1.default.get(`${githubUrl}${REQUESTS.REVIEWS_URL}`))
         .data;
+    // Otto's stage comes first: while the PR waits on it the cascade hands no
+    // tier a review and promotes nothing, like the conflict guard above.
+    if (awaitingOtto(reviews, requestedReviewers))
+        return [];
     const threadOpeners = yield findThreadOpeners(githubUrl, reviews, author);
     const latestReviews = tallyReviews(reviews, requestedReviewers, author, threadOpeners);
     const { approvedByPeer, approvedByDev, approvedByQa, fullyApproved } = tierVerdict(latestReviews);
@@ -17771,7 +17810,9 @@ exports.handleReview = handleReview;
 // ready, mergeable, green and under no standing changes-request is in
 // review, so each active-tier reviewer GitHub is still waiting on holds a
 // pending Review subtask and the task sits in Testing / Review - or in
-// Approved once every tier has signed off. It is what puts the approvals
+// Approved once every tier has signed off. Unless the PR is waiting on otto,
+// whose stage comes first: then the task is in review and nobody else is
+// called yet. It is what puts the approvals
 // back once a conflict is resolved, and what repairs a transition that a
 // missed or overlapping event left half-done. It reads the PR fresh rather
 // than trusting the payload: a parallel run may have moved the PR on since
@@ -17799,15 +17840,16 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
     // would promote the task to Approved while GitHub still waits on that
     // reviewer, and it would sit there until the next event's re-check.
     //
-    // The timeline is read only when there is something to settle: a tier
-    // reviewer's approval with the fresh list still naming them. Once GitHub
-    // has caught up there is no entry to explain, and a bot's approval gates
-    // nothing whichever list it sits on, so neither makes the call.
+    // The timeline is read only when there is something to settle: an approval
+    // with the fresh list still naming its approver, from a tier reviewer or
+    // from otto, whose listing decides whether the peers are called. Once
+    // GitHub has caught up there is no entry to explain.
     const listed = pullRequest.requested_reviewers || [];
     const approverStillListed = event.eventName === "pull_request_review" &&
         event.action === "submitted" &&
         event.reviewState === "approved" &&
-        utils.isReviewTier(utils.findUserByGithubName(event.username)) &&
+        (utils.isReviewTier(utils.findUserByGithubName(event.username)) ||
+            event.username === OTTO_LOGIN) &&
         listed.some((reviewer) => reviewer.login === event.username);
     const justApproved = approverStillListed &&
         !(yield wasRerequestedAfterReview(event, event.username))
@@ -17833,6 +17875,7 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
         return;
     const latestReviews = tallyReviews(reviews, requestedReviewers, author, threadOpeners);
     const { fullyApproved } = tierVerdict(latestReviews);
+    const waitingOnOtto = awaitingOtto(reviews, requestedReviewers);
     // An approver asked again keeps their approval in the tally, but GitHub
     // is waiting on them: their fresh Review subtask stays pending.
     const approvedAsanaIds = Object.values(latestReviews)
@@ -17866,13 +17909,15 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
         // handler set from a stale payload is put right - on the two exits below
         // as well, which never reach the add helper.
         yield asana.syncBlockingReviewTitles(taskId, activeTier);
-        if (fullyApproved) {
+        if (fullyApproved && !waitingOnOtto) {
             yield asana.moveTaskToSection(taskId, SECTIONS.APPROVED, leaveAlone);
             continue;
         }
         if (!activeTier.length)
             continue;
         yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, leaveAlone);
+        if (waitingOnOtto)
+            continue;
         yield asana.addRequestedReviews(taskId, activeTier, event.prUrl);
     }
 });

@@ -3,6 +3,7 @@ import * as REQUESTS from "../constants/requests";
 import * as SECTIONS from "../constants/sections";
 import * as asana from "../asana";
 import * as utils from "../utils";
+import { reviewersToCall } from "./review";
 import { SyncEvent } from "../event";
 
 // CI runs fire on these pull_request actions in the consumer workflows.
@@ -72,7 +73,11 @@ export const handleCiStatus = async (event: SyncEvent) => {
           SECTIONS.APPROVED,
           ...SECTIONS.RELEASED_SECTIONS,
         ]);
-        await asana.addRequestedReviews(taskId, activeTier, event.prUrl);
+        await asana.addRequestedReviews(
+          taskId,
+          await reviewersToCall(event, activeTier),
+          event.prUrl
+        );
       }
 
       // CI broke: green -> red. Review requests are stale; task goes back.
