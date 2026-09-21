@@ -14,8 +14,8 @@ PEER_DEV → DEV → QA exactly as today.
   has submitted no review, calls its peers as before, and the cascade runs on
   to DEV and QA unchanged.
 - [x] While otto is on the PR and still to answer, because GitHub lists it as
-  requested or its latest review is anything but an approval (changes
-  requested, a comment-only report, a dismissed approval), no human-tier
+  requested or its standing verdict is anything but an approval (changes
+  requested, a dismissed approval), no human-tier
   "Review" subtask is created, on every path that creates one: a PR opened or
   reopened ready, marked ready for review, a reviewer requested, CI going green
   again, the approval cascade, and the after-event re-check.
@@ -23,6 +23,9 @@ PEER_DEV → DEV → QA exactly as today.
   active tier gets its "Review" subtasks and the task sits in Testing / Review,
   even when GitHub's reviewer list has not yet dropped otto. From there the
   cascade continues to DEV and QA as today.
+- [x] Otto's comment-only report, how it files findings below its blocking
+  bar, is its answer too: it opens the stage the way its approval does unless
+  a changes-request from otto stands before it, which it inherits.
 - [x] Re-requesting otto after it approved closes the stage again until it
   answers: no new reviewer is called meanwhile, and subtasks already handed
   out are left alone.
@@ -30,9 +33,10 @@ PEER_DEV → DEV → QA exactly as today.
   tiers say; once otto has approved, standing human approvals count as before.
 - [x] Waiting on otto never deletes a subtask and never keeps a task from
   moving to Testing / Review.
-- [x] A test per path that fails on `main` and passes with the fix; every
-  existing test passes, with the one asserting otto's changes-request cannot
-  block a fully approved PR flipped to the new rule.
+- [x] A test per gated path that fails on `main` and passes with the fix, and
+  a guard per path that must stay unchanged; every existing test passes, with
+  the one asserting otto's changes-request cannot block a fully approved PR
+  flipped to the new rule.
 - [x] The README's ready-for-review and approval rows, the re-check paragraph,
   and the People and teams section name otto's stage.
 - [x] `dist/` matches a fresh build of the changed source.

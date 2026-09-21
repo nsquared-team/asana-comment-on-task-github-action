@@ -16,25 +16,38 @@ const OTTO_LOGIN = "otto-bot-git";
 const pullRequestUrl = (event: SyncEvent) =>
   `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
 
-// A review its author has not submitted yet carries no time and no verdict,
-// and one from an account GitHub has since deleted carries no user.
-const latestReviewBy = (reviews: any[], login: string) =>
-  reviews.reduce(
-    (latest: any, review: any) =>
-      review.user?.login === login &&
-      review.submitted_at &&
-      (!latest || latest.submitted_at < review.submitted_at)
-        ? review
-        : latest,
-    undefined
-  );
+// Otto's standing verdict on the PR. It requests changes on a new Critical
+// or High finding, approves on none, and files anything in between as a
+// comment-only report. That report answers a request without proving the
+// earlier findings fixed, so it inherits a changes-request that stands and
+// otherwise counts as an approval. A review its author has not submitted yet
+// carries no time and no verdict, and one from an account GitHub has since
+// deleted carries no user.
+const ottoVerdict = (reviews: any[]) => {
+  const own = reviews
+    .filter(
+      (review: any) => review.user?.login === OTTO_LOGIN && review.submitted_at
+    )
+    .sort((a: any, b: any) => a.submitted_at.localeCompare(b.submitted_at));
+  let verdict: string | undefined;
+  for (const review of own) {
+    if (review.state !== "COMMENTED") verdict = review.state;
+    else if (verdict !== "CHANGES_REQUESTED") verdict = "APPROVED";
+  }
+  return verdict;
+};
+
+// Otto answers a request with an approval or with a comment-only report.
+const ottoAnswered = (event: SyncEvent) =>
+  event.username === OTTO_LOGIN &&
+  ["approved", "commented"].includes(event.reviewState);
 
 // Otto reviews before the peer developers on the PRs it is added to. While
-// GitHub still waits on it, or its last review was anything but an approval -
-// a changes-request, a comment-only report, a dismissed approval - the PR may
-// still need work, so no human tier is handed a Review subtask and the task
-// is not promoted. A PR otto was never asked onto and has never reviewed is
-// not waiting on it: the cascade runs PEER_DEV -> DEV -> QA as before. Asking
+// GitHub still waits on it, or its standing verdict is anything but an
+// approval - a changes-request, a dismissed approval - the PR may still need
+// work, so no human tier is handed a Review subtask and the task is not
+// promoted. A PR otto was never asked onto and has never reviewed is not
+// waiting on it: the cascade runs PEER_DEV -> DEV -> QA as before. Asking
 // otto again after it approved closes the stage until it answers; the
 // subtasks already handed out stay. Dismissing otto's approval re-requests
 // it once, as for any reviewer; otherwise the author asks it again by hand,
@@ -43,8 +56,8 @@ const awaitingOtto = (reviews: any[], requestedReviewers: any[]) => {
   if (requestedReviewers.some((r: any) => r.githubName === OTTO_LOGIN)) {
     return true;
   }
-  const latest = latestReviewBy(reviews, OTTO_LOGIN);
-  return Boolean(latest) && latest.state !== "APPROVED";
+  const verdict = ottoVerdict(reviews);
+  return Boolean(verdict) && verdict !== "APPROVED";
 };
 
 // The handlers that hand out reviews from the webhook payload alone read the
@@ -439,11 +452,13 @@ export const handleReview = async (event: SyncEvent) => {
   }
 
   // The ready-for-review invariant extends to approvals: reviews submitted
-  // on a draft PR never cascade or promote the task.
+  // on a draft PR never cascade or promote the task. Otto's comment-only
+  // report runs the cascade the way its approval does: it is otto's answer,
+  // and whether it opens the stage is its standing verdict's call.
   let cascadeFollowers: string[] = [];
   if (
     event.action === "submitted" &&
-    event.reviewState === "approved" &&
+    (event.reviewState === "approved" || ottoAnswered(event)) &&
     !event.isDraft
   ) {
     cascadeFollowers = await handleApprovalCascade(event, stillRequested);
@@ -519,17 +534,18 @@ export const reconcileReviewState = async (event: SyncEvent) => {
   // would promote the task to Approved while GitHub still waits on that
   // reviewer, and it would sit there until the next event's re-check.
   //
-  // The timeline is read only when there is something to settle: an approval
-  // with the fresh list still naming its approver, from a tier reviewer or
-  // from otto, whose listing decides whether the peers are called. Once
-  // GitHub has caught up there is no entry to explain.
+  // The timeline is read only when there is something to settle: an answer
+  // with the fresh list still naming its reviewer - a tier reviewer's
+  // approval, or otto's approval or comment-only report, since its listing
+  // decides whether the peers are called. Once GitHub has caught up there is
+  // no entry to explain.
   const listed: any[] = pullRequest.requested_reviewers || [];
   const approverStillListed =
     event.eventName === "pull_request_review" &&
     event.action === "submitted" &&
-    event.reviewState === "approved" &&
-    (utils.isReviewTier(utils.findUserByGithubName(event.username)) ||
-      event.username === OTTO_LOGIN) &&
+    ((event.reviewState === "approved" &&
+      utils.isReviewTier(utils.findUserByGithubName(event.username))) ||
+      ottoAnswered(event)) &&
     listed.some((reviewer: any) => reviewer.login === event.username);
   const justApproved =
     approverStillListed &&

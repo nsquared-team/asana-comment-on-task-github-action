@@ -450,10 +450,16 @@ describe("reviews", () => {
 
   // GitHub files every inline comment as a review of its own; a review that
   // opened a thread is a verdict, one that only replied is conversation.
+  // Otto's comment review runs the cascade, which reads the PR and its
+  // reviews as well, so only the comments read answers with the comment.
   const inlineComments = (inReplyTo?: number) =>
-    githubGet.mockResolvedValue({
-      data: [{ pull_request_review_id: 7, in_reply_to_id: inReplyTo }],
-    });
+    githubGet.mockImplementation((url: string) =>
+      Promise.resolve({
+        data: url.includes("/comments")
+          ? [{ pull_request_review_id: 7, in_reply_to_id: inReplyTo }]
+          : [],
+      })
+    );
 
   test("a comment review that only leaves notes on the diff is still a rejection", async () => {
     mockAsana({ taskSection: "Testing / Review" });
@@ -2654,11 +2660,11 @@ describe("otto is the stage before the peers", () => {
         ["Review", "Blocking Review"].includes(payload.data.name)
     );
 
-  const reviewRun = (login: string, submittedAt: string) =>
+  const reviewRun = (login: string, submittedAt: string, state = "approved") =>
     baseEvent({
       eventName: "pull_request_review",
       action: "submitted",
-      reviewState: "approved",
+      reviewState: state,
       reviewSubmittedAt: submittedAt,
       username: login,
       commentUrl: `https://github.com/r/pull/42#review-${login}`,
@@ -2704,11 +2710,54 @@ describe("otto is the stage before the peers", () => {
 
   test.each([
     ["changes-request", "CHANGES_REQUESTED"],
-    ["comment-only report", "COMMENTED"],
     ["dismissed approval", "DISMISSED"],
   ])("a peer requested after otto's %s is not called", async (_, state) => {
     mockAsana();
     githubGet.mockResolvedValue({ data: [ottoReview(state)] });
+    await handlePullRequest(
+      baseEvent({
+        action: "review_requested",
+        requestedReviewers: [PEER],
+        eventReviewer: PEER,
+      })
+    );
+    expect(reviewCreates()).toHaveLength(0);
+  });
+
+  // Otto files findings below its blocking bar as a comment-only report:
+  // its answer, and on its own an approval.
+  test.each([
+    ["nothing", undefined],
+    ["its approval", ottoReview("APPROVED", "2026-09-20T09:00:00Z")],
+    ["its dismissed approval", ottoReview("DISMISSED", "2026-09-20T09:00:00Z")],
+  ])(
+    "a peer requested after otto's comment-only report following %s is called",
+    async (_, earlier) => {
+      mockAsana();
+      githubGet.mockResolvedValue({
+        data: [earlier, ottoReview("COMMENTED")].filter(Boolean),
+      });
+      await handlePullRequest(
+        baseEvent({
+          action: "review_requested",
+          requestedReviewers: [PEER],
+          eventReviewer: PEER,
+        })
+      );
+      expect(reviewCreates()).toHaveLength(1);
+    }
+  );
+
+  // The report does not prove the earlier findings fixed, so the
+  // changes-request before it stands until otto approves.
+  test("otto's comment-only report inherits the changes-request before it", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({
+      data: [
+        ottoReview("CHANGES_REQUESTED", "2026-09-20T09:00:00Z"),
+        ottoReview("COMMENTED"),
+      ],
+    });
     await handlePullRequest(
       baseEvent({
         action: "review_requested",
@@ -2860,6 +2909,17 @@ describe("otto is the stage before the peers", () => {
     expect(reviewCreates()[0][1].data.assignee).toBe(DEV.asanaId);
   });
 
+  test("otto's comment-only report hands DEV their review the way its approval does", async () => {
+    mockAsana();
+    mockGithub(mergeablePr, [peerApproved, ottoReview("COMMENTED")]);
+    await handleReview({
+      ...reviewRun(OTTO.githubName, "2026-09-20T10:00:00Z", "commented"),
+      requestedReviewers: [OTTO, DEV],
+    });
+    expect(reviewCreates()).toHaveLength(1);
+    expect(reviewCreates()[0][1].data.assignee).toBe(DEV.asanaId);
+  });
+
   // Fails with otto left on the fresh list: the re-check would then read its
   // own approval's run as otto still to answer and call nobody.
   test("otto's approval calls the peers even while GitHub's list still names otto", async () => {
@@ -2871,6 +2931,21 @@ describe("otto is the stage before the peers", () => {
     );
     await reconcileReviewState(
       reviewRun(OTTO.githubName, "2026-09-20T10:00:00Z")
+    );
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(1);
+    expect(reviewCreates()[0][1].data.assignee).toBe(PEER.asanaId);
+  });
+
+  test("otto's comment-only report calls the peers even while GitHub's list still names otto", async () => {
+    mockAsana();
+    mockGithub(
+      readyPr([OTTO.githubName, PEER.githubName]),
+      [ottoReview("COMMENTED", "2026-09-20T10:00:00Z")],
+      [requestedOnTimeline(OTTO.githubName, "2026-09-20T09:00:00Z")]
+    );
+    await reconcileReviewState(
+      reviewRun(OTTO.githubName, "2026-09-20T10:00:00Z", "commented")
     );
     expect(movesTo("Testing / Review")).toHaveLength(1);
     expect(reviewCreates()).toHaveLength(1);
