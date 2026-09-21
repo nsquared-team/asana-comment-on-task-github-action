@@ -17432,10 +17432,16 @@ const SUBTASK_REVIEW_STATES = ["approved", "pending", "changes_requested"];
 const DEFINITIVE_REVIEW_STATES = ["CHANGES_REQUESTED", "APPROVED", "DISMISSED"];
 const OTTO_LOGIN = "otto-bot-git";
 const pullRequestUrl = (event) => `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
-const latestReviewBy = (reviews, login) => reviews.reduce((latest, review) => review.user.login === login &&
-    (!latest || latest.submitted_at < review.submitted_at)
-    ? review
-    : latest, undefined);
+// A review its author has not submitted yet carries no time and no verdict,
+// and one from an account GitHub has since deleted carries no user.
+const latestReviewBy = (reviews, login) => reviews.reduce((latest, review) => {
+    var _a;
+    return ((_a = review.user) === null || _a === void 0 ? void 0 : _a.login) === login &&
+        review.submitted_at &&
+        (!latest || latest.submitted_at < review.submitted_at)
+        ? review
+        : latest;
+}, undefined);
 // Otto reviews before the peer developers on the PRs it is added to. While
 // GitHub still waits on it, or its last review was anything but an approval -
 // a changes-request, a comment-only report, a dismissed approval - the PR may
@@ -17443,8 +17449,9 @@ const latestReviewBy = (reviews, login) => reviews.reduce((latest, review) => re
 // is not promoted. A PR otto was never asked onto and has never reviewed is
 // not waiting on it: the cascade runs PEER_DEV -> DEV -> QA as before. Asking
 // otto again after it approved closes the stage until it answers; the
-// subtasks already handed out stay. Nothing here re-requests otto - the
-// author does, once the PR is ready for another pass.
+// subtasks already handed out stay. Dismissing otto's approval re-requests
+// it once, as for any reviewer; otherwise the author asks it again by hand,
+// once the PR is ready for another pass.
 const awaitingOtto = (reviews, requestedReviewers) => {
     if (requestedReviewers.some((r) => r.githubName === OTTO_LOGIN)) {
         return true;
@@ -17457,7 +17464,17 @@ const awaitingOtto = (reviews, requestedReviewers) => {
 const reviewersToCall = (event, reviewers) => __awaiter(void 0, void 0, void 0, function* () {
     if (!reviewers.length)
         return reviewers;
-    const reviews = (yield githubAxios_1.default.get(`${pullRequestUrl(event)}${REQUESTS.REVIEWS_URL}`)).data;
+    let reviews;
+    try {
+        reviews = (yield githubAxios_1.default.get(`${pullRequestUrl(event)}${REQUESTS.REVIEWS_URL}`)).data;
+    }
+    catch (error) {
+        // Losing the read must neither stall the sync nor call a peer onto a PR
+        // otto may still be reviewing: nobody is called this run, and the next
+        // event's re-check puts that right.
+        console.warn("Failed to read the reviews:", error);
+        return [];
+    }
     return awaitingOtto(reviews, event.requestedReviewers) ? [] : reviewers;
 });
 exports.reviewersToCall = reviewersToCall;
@@ -17749,13 +17766,15 @@ const handleReview = (event) => __awaiter(void 0, void 0, void 0, function* () {
     }
     // A dismissed approval un-approves the PR, so the task cannot stay in
     // Approved waiting on a sign-off that no longer exists. Its reviewer is
-    // summoned back here, unless someone already re-requested them by hand.
+    // summoned back here, unless someone already re-requested them by hand -
+    // otto included, since its dismissed approval closes the peer stage.
     if (event.action === "dismissed" && !event.isDraft) {
         for (const taskId of event.taskIds) {
             yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, SECTIONS.PROTECTED_FROM_DEMOTION);
         }
         const alreadyRequested = event.requestedReviewers.some((requested) => requested.githubName === event.username);
-        if (reviewer && utils.isReviewTier(reviewer) && !alreadyRequested) {
+        const summonsBack = utils.isReviewTier(reviewer) || event.username === OTTO_LOGIN;
+        if (reviewer && summonsBack && !alreadyRequested) {
             yield rerequestReviewer(pullRequestUrl(event), reviewer.githubName);
         }
     }

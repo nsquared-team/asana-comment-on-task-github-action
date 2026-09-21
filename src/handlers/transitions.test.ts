@@ -1029,10 +1029,13 @@ describe("a dismissed review summons its reviewer back", () => {
     expect(rerequests()).toHaveLength(0);
   });
 
-  test("a bot's dismissed review is never resummoned", async () => {
+  // Otto's dismissed approval closes the peer stage, so leaving it unasked
+  // would deadlock the PR the same way a tier reviewer's would.
+  test("otto's dismissed approval summons it back like a reviewer's", async () => {
     mockAsana();
     await handleReview(dismissalOf("otto-bot-git"));
-    expect(rerequests()).toHaveLength(0);
+    expect(rerequests()).toHaveLength(1);
+    expect(rerequests()[0][1]).toEqual({ reviewers: ["otto-bot-git"] });
   });
 
   // GitHub reports every dismissed review as DISMISSED, so a tally that
@@ -2713,6 +2716,76 @@ describe("otto is the stage before the peers", () => {
         eventReviewer: PEER,
       })
     );
+    expect(reviewCreates()).toHaveLength(0);
+  });
+
+  test("a review otto has not submitted yet does not hide its approval", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({
+      data: [
+        {
+          user: { login: OTTO.githubName },
+          state: "PENDING",
+          submitted_at: null,
+        },
+        ottoReview("APPROVED"),
+      ],
+    });
+    await handlePullRequest(
+      baseEvent({
+        action: "review_requested",
+        requestedReviewers: [PEER],
+        eventReviewer: PEER,
+      })
+    );
+    expect(reviewCreates()).toHaveLength(1);
+  });
+
+  test("a review from a deleted account does not break the read", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({
+      data: [
+        {
+          user: null,
+          state: "COMMENTED",
+          submitted_at: "2026-09-20T10:00:00Z",
+        },
+      ],
+    });
+    await handlePullRequest(
+      baseEvent({
+        action: "review_requested",
+        requestedReviewers: [PEER],
+        eventReviewer: PEER,
+      })
+    );
+    expect(reviewCreates()).toHaveLength(1);
+  });
+
+  test("an unreadable reviews list calls nobody but still moves the task", async () => {
+    mockAsana();
+    githubGet.mockRejectedValue(new Error("GitHub unreachable"));
+    await handlePullRequest(
+      baseEvent({ action: "opened", requestedReviewers: [PEER] })
+    );
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(0);
+  });
+
+  test("an unreadable reviews list still records the CI verdict", async () => {
+    mockAsana({ subtasks: [rejectedCi] });
+    githubGet.mockRejectedValue(new Error("GitHub unreachable"));
+    await handleCiStatus(
+      baseEvent({
+        action: "synchronize",
+        ciStatus: "approved",
+        requestedReviewers: [PEER],
+      })
+    );
+    const verdictWrites = asanaPut.mock.calls.filter(([url]: [string]) =>
+      url.includes(rejectedCi.gid)
+    );
+    expect(verdictWrites).toHaveLength(1);
     expect(reviewCreates()).toHaveLength(0);
   });
 

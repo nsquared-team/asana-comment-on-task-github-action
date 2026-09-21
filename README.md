@@ -47,7 +47,7 @@ stateDiagram-v2
 
 On a PR otto is added to — GitHub lists it as a requested reviewer, or it has submitted a review — otto is the stage before the peer developers, so nobody is called to review a PR that may still need work. While otto is still to answer, because it is still requested or its latest review is anything but an approval (a changes-request, a comment-only report, a dismissed approval), no human-tier "Review" subtask is created on any path, the cascade hands no tier a review, and the task is never moved to Approved. The task still moves to Testing / Review, and subtasks already handed out are left alone.
 
-Otto's approval opens the stage on its own run, even while GitHub's reviewer list has not yet dropped it (the timeline tells that stale listing from a genuine re-request, as for a human approver), and the cascade continues PEER_DEV → DEV → QA from there. Asking otto again after it approved closes the stage until it answers. Nothing re-requests otto: the author does, once the PR is ready for another pass. A PR otto is not on runs PEER_DEV → DEV → QA exactly as before.
+Otto's approval opens the stage on its own run, even while GitHub's reviewer list has not yet dropped it (the timeline tells that stale listing from a genuine re-request, as for a human approver), and the cascade continues PEER_DEV → DEV → QA from there. Asking otto again after it approved closes the stage until it answers. Dismissing otto's approval re-requests otto once, as for any reviewer (see the dismissed row); otherwise the author asks otto again by hand, once the PR is ready for another pass. A PR otto is not on runs PEER_DEV → DEV → QA exactly as before.
 
 ### Every event re-checks the review state
 

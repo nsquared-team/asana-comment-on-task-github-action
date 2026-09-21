@@ -16,10 +16,13 @@ const OTTO_LOGIN = "otto-bot-git";
 const pullRequestUrl = (event: SyncEvent) =>
   `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
 
+// A review its author has not submitted yet carries no time and no verdict,
+// and one from an account GitHub has since deleted carries no user.
 const latestReviewBy = (reviews: any[], login: string) =>
   reviews.reduce(
     (latest: any, review: any) =>
-      review.user.login === login &&
+      review.user?.login === login &&
+      review.submitted_at &&
       (!latest || latest.submitted_at < review.submitted_at)
         ? review
         : latest,
@@ -33,8 +36,9 @@ const latestReviewBy = (reviews: any[], login: string) =>
 // is not promoted. A PR otto was never asked onto and has never reviewed is
 // not waiting on it: the cascade runs PEER_DEV -> DEV -> QA as before. Asking
 // otto again after it approved closes the stage until it answers; the
-// subtasks already handed out stay. Nothing here re-requests otto - the
-// author does, once the PR is ready for another pass.
+// subtasks already handed out stay. Dismissing otto's approval re-requests
+// it once, as for any reviewer; otherwise the author asks it again by hand,
+// once the PR is ready for another pass.
 const awaitingOtto = (reviews: any[], requestedReviewers: any[]) => {
   if (requestedReviewers.some((r: any) => r.githubName === OTTO_LOGIN)) {
     return true;
@@ -47,9 +51,18 @@ const awaitingOtto = (reviews: any[], requestedReviewers: any[]) => {
 // reviews here, and only when there is someone to call.
 export const reviewersToCall = async (event: SyncEvent, reviewers: any[]) => {
   if (!reviewers.length) return reviewers;
-  const reviews = (
-    await githubAxios.get(`${pullRequestUrl(event)}${REQUESTS.REVIEWS_URL}`)
-  ).data;
+  let reviews: any[];
+  try {
+    reviews = (
+      await githubAxios.get(`${pullRequestUrl(event)}${REQUESTS.REVIEWS_URL}`)
+    ).data;
+  } catch (error) {
+    // Losing the read must neither stall the sync nor call a peer onto a PR
+    // otto may still be reviewing: nobody is called this run, and the next
+    // event's re-check puts that right.
+    console.warn("Failed to read the reviews:", error);
+    return [];
+  }
   return awaitingOtto(reviews, event.requestedReviewers) ? [] : reviewers;
 };
 
@@ -405,7 +418,8 @@ export const handleReview = async (event: SyncEvent) => {
 
   // A dismissed approval un-approves the PR, so the task cannot stay in
   // Approved waiting on a sign-off that no longer exists. Its reviewer is
-  // summoned back here, unless someone already re-requested them by hand.
+  // summoned back here, unless someone already re-requested them by hand -
+  // otto included, since its dismissed approval closes the peer stage.
   if (event.action === "dismissed" && !event.isDraft) {
     for (const taskId of event.taskIds) {
       await asana.moveTaskToSection(
@@ -417,7 +431,9 @@ export const handleReview = async (event: SyncEvent) => {
     const alreadyRequested = event.requestedReviewers.some(
       (requested: any) => requested.githubName === event.username
     );
-    if (reviewer && utils.isReviewTier(reviewer) && !alreadyRequested) {
+    const summonsBack =
+      utils.isReviewTier(reviewer) || event.username === OTTO_LOGIN;
+    if (reviewer && summonsBack && !alreadyRequested) {
       await rerequestReviewer(pullRequestUrl(event), reviewer.githubName);
     }
   }
