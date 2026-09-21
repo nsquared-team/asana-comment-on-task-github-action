@@ -16,21 +16,45 @@ const OTTO_LOGIN = "otto-bot-git";
 const pullRequestUrl = (event: SyncEvent) =>
   `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
 
+// GitHub pages its lists, so one read of a long PR's reviews or timeline
+// would drop the latest entries - the ones a verdict turns on.
+const readAllPages = async (url: string, pageSize: number) => {
+  const entries: any[] = [];
+  for (let page = 1; ; page++) {
+    const batch = (await githubAxios.get(`${url}&page=${page}`)).data;
+    entries.push(...batch);
+    if (batch.length < pageSize) return entries;
+  }
+};
+
+// A review its author has not submitted yet carries no time and no verdict,
+// and one from an account GitHub has since deleted carries no user; neither
+// can count for anyone, so no reader has to guard against them.
+const readReviews = async (githubUrl: string) => {
+  const reviews = await readAllPages(
+    `${githubUrl}${REQUESTS.REVIEWS_URL}`,
+    REQUESTS.REVIEWS_PAGE_SIZE
+  );
+  return reviews.filter(
+    (review: any) => review.user?.login && review.submitted_at
+  );
+};
+
 // Otto's standing verdict on the PR. It requests changes on a new Critical
 // or High finding, approves on none, and files anything in between as a
 // comment-only report. That report answers a request without proving the
 // earlier findings fixed, so it inherits a changes-request that stands and
-// otherwise counts as an approval. A review its author has not submitted yet
-// carries no time and no verdict, and one from an account GitHub has since
-// deleted carries no user.
+// otherwise counts as an approval. A dismissed review is withdrawn whichever
+// way it went: a person overruled otto's changes-request, or its approval no
+// longer counts and the dismissal asked otto again (see the dismissed
+// handler), which is what keeps the stage closed.
 const ottoVerdict = (reviews: any[]) => {
   const own = reviews
-    .filter(
-      (review: any) => review.user?.login === OTTO_LOGIN && review.submitted_at
-    )
+    .filter((review: any) => review.user.login === OTTO_LOGIN)
     .sort((a: any, b: any) => a.submitted_at.localeCompare(b.submitted_at));
   let verdict: string | undefined;
   for (const review of own) {
+    if (review.state === "DISMISSED") continue;
     if (review.state !== "COMMENTED") verdict = review.state;
     else if (verdict !== "CHANGES_REQUESTED") verdict = "APPROVED";
   }
@@ -43,15 +67,15 @@ const ottoAnswered = (event: SyncEvent) =>
   ["approved", "commented"].includes(event.reviewState);
 
 // Otto reviews before the peer developers on the PRs it is added to. While
-// GitHub still waits on it, or its standing verdict is anything but an
-// approval - a changes-request, a dismissed approval - the PR may still need
-// work, so no human tier is handed a Review subtask and the task is not
-// promoted. A PR otto was never asked onto and has never reviewed is not
-// waiting on it: the cascade runs PEER_DEV -> DEV -> QA as before. Asking
-// otto again after it approved closes the stage until it answers; the
-// subtasks already handed out stay. Dismissing otto's approval re-requests
-// it once, as for any reviewer; otherwise the author asks it again by hand,
-// once the PR is ready for another pass.
+// GitHub still waits on it, or its standing verdict is a changes-request,
+// the PR may still need work, so no human tier is handed a Review subtask
+// and the task is not promoted. A PR otto was never asked onto and has no
+// standing verdict on is not waiting on it: the cascade runs PEER_DEV -> DEV
+// -> QA as before. Asking otto again after it approved closes the stage
+// until it answers; the subtasks already handed out stay. Dismissing otto's
+// approval re-requests it once, as for any reviewer; dismissing its
+// changes-request overrules it, and otto is not asked again. Otherwise the
+// author asks it again by hand, once the PR is ready for another pass.
 const awaitingOtto = (reviews: any[], requestedReviewers: any[]) => {
   if (requestedReviewers.some((r: any) => r.githubName === OTTO_LOGIN)) {
     return true;
@@ -61,14 +85,13 @@ const awaitingOtto = (reviews: any[], requestedReviewers: any[]) => {
 };
 
 // The handlers that hand out reviews from the webhook payload alone read the
-// reviews here, and only when there is someone to call.
+// reviews here, and only when there is someone to call and a task to call
+// them on.
 export const reviewersToCall = async (event: SyncEvent, reviewers: any[]) => {
-  if (!reviewers.length) return reviewers;
+  if (!reviewers.length || !event.taskIds.length) return [];
   let reviews: any[];
   try {
-    reviews = (
-      await githubAxios.get(`${pullRequestUrl(event)}${REQUESTS.REVIEWS_URL}`)
-    ).data;
+    reviews = await readReviews(pullRequestUrl(event));
   } catch (error) {
     // Losing the read must neither stall the sync nor call a peer onto a PR
     // otto may still be reviewing: nobody is called this run, and the next
@@ -108,17 +131,14 @@ const findThreadOpeners = async (
     (review) => isTierComment(review, author) && !review.body?.trim()
   );
   if (!needed) return openers;
-  for (let page = 1; ; page++) {
-    const comments = (
-      await githubAxios.get(
-        `${githubUrl}${REQUESTS.REVIEW_COMMENTS_URL}&page=${page}`
-      )
-    ).data;
-    for (const comment of comments) {
-      if (!comment.in_reply_to_id) openers.add(comment.pull_request_review_id);
-    }
-    if (comments.length < REQUESTS.REVIEW_COMMENTS_PAGE_SIZE) return openers;
+  const comments = await readAllPages(
+    `${githubUrl}${REQUESTS.REVIEW_COMMENTS_URL}`,
+    REQUESTS.REVIEW_COMMENTS_PAGE_SIZE
+  );
+  for (const comment of comments) {
+    if (!comment.in_reply_to_id) openers.add(comment.pull_request_review_id);
   }
+  return openers;
 };
 
 // Latest definitive review per GitHub login, mapped in the user table or not.
@@ -202,33 +222,59 @@ const tallyReviews = (
 // before this check existed. The spare Review that costs is put right by the
 // next event's re-check; a task promoted past a live reviewer would sit in
 // Approved until that same re-check, and someone may merge on it meanwhile.
+const readTimeline = (event: SyncEvent) =>
+  readAllPages(
+    `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.ISSUES_URL}${event.prNumber}${REQUESTS.TIMELINE_URL}`,
+    REQUESTS.TIMELINE_PAGE_SIZE
+  );
+
 const wasRerequestedAfterReview = async (
   event: SyncEvent,
   githubName: string
 ) => {
-  const timelineUrl = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.ISSUES_URL}${event.prNumber}${REQUESTS.TIMELINE_URL}`;
-  let lastRequestedAt = "";
+  let entries: any[];
   try {
-    for (let page = 1; ; page++) {
-      const entries = (await githubAxios.get(`${timelineUrl}&page=${page}`))
-        .data;
-      for (const entry of entries) {
-        if (entry.requested_reviewer?.login !== githubName) continue;
-        if (entry.event === "review_requested") {
-          lastRequestedAt = entry.created_at;
-        }
-        // A request GitHub withdrew is not a request, and the withdrawal is
-        // the later fact about that reviewer.
-        if (entry.event === "review_request_removed") lastRequestedAt = "";
-      }
-      if (entries.length < REQUESTS.TIMELINE_PAGE_SIZE) break;
-    }
+    entries = await readTimeline(event);
   } catch (error) {
     // The timeline only sharpens a guess; losing it must not stall the sync.
     console.warn(`Failed to read the timeline for ${githubName}:`, error);
     return true;
   }
+  let lastRequestedAt = "";
+  for (const entry of entries) {
+    if (entry.requested_reviewer?.login !== githubName) continue;
+    if (entry.event === "review_requested") {
+      lastRequestedAt = entry.created_at;
+    }
+    // A request GitHub withdrew is not a request, and the withdrawal is
+    // the later fact about that reviewer.
+    if (entry.event === "review_request_removed") lastRequestedAt = "";
+  }
   return lastRequestedAt > event.reviewSubmittedAt;
+};
+
+// What the review a dismissal is for had said. GitHub's payload and its
+// reviews list report every dismissed review the same, so the timeline's
+// entry for the dismissal is what tells otto's dismissed approval, which
+// summons it back like a reviewer's, from its dismissed changes-request,
+// which a person dismissed to overrule and otto is not asked to file again.
+// An entry not there yet, or an unreadable timeline, answers true: asking
+// otto once too often costs it a pass, while not asking it would open the
+// peer stage on an approval that no longer stands.
+const wasApprovalDismissed = async (event: SyncEvent) => {
+  let entries: any[];
+  try {
+    entries = await readTimeline(event);
+  } catch (error) {
+    console.warn("Failed to read the timeline for the dismissal:", error);
+    return true;
+  }
+  const dismissal = entries.find(
+    (entry: any) =>
+      entry.event === "review_dismissed" &&
+      entry.dismissed_review?.review_id === event.reviewId
+  );
+  return !dismissal || dismissal.dismissed_review.state === "approved";
 };
 
 // A dismissed review blocks its tier, but nothing summons its reviewer
@@ -311,8 +357,7 @@ const handleApprovalCascade = async (
   if (pullRequestResponse.data.mergeable === false) return [];
 
   const author = pullRequestResponse.data.user?.login;
-  const reviews = (await githubAxios.get(`${githubUrl}${REQUESTS.REVIEWS_URL}`))
-    .data;
+  const reviews = await readReviews(githubUrl);
   // Otto's stage comes first: while the PR waits on it the cascade hands no
   // tier a review and promotes nothing, like the conflict guard above.
   if (awaitingOtto(reviews, requestedReviewers)) return [];
@@ -335,6 +380,21 @@ const handleApprovalCascade = async (
   );
 
   const followers: string[] = [];
+
+  // Otto's answer opening the stage is what calls the peers: they were
+  // requested while the PR still waited on otto, so that request called
+  // nobody. Whoever GitHub still waits on in the tier is called, and one
+  // already holding a Review is never handed a second. DEV and QA follow
+  // from the peers' approvals below, as on any PR.
+  if (ottoAnswered(event)) {
+    const peerReviewers = requestedReviewers.filter(
+      (reviewer: any) => reviewer.team === "PEER_DEV"
+    );
+    for (const reviewer of peerReviewers) followers.push(reviewer.asanaId);
+    for (const taskId of event.taskIds) {
+      await asana.addRequestedReviews(taskId, peerReviewers, event.prUrl);
+    }
+  }
 
   if (approvedByPeer && !approvedByDev) {
     for (const reviewer of devReviewers) followers.push(reviewer.asanaId);
@@ -432,7 +492,8 @@ export const handleReview = async (event: SyncEvent) => {
   // A dismissed approval un-approves the PR, so the task cannot stay in
   // Approved waiting on a sign-off that no longer exists. Its reviewer is
   // summoned back here, unless someone already re-requested them by hand -
-  // otto included, since its dismissed approval closes the peer stage.
+  // otto included when it is its approval that was dismissed, since that
+  // closes the peer stage; its dismissed changes-request was overruled.
   if (event.action === "dismissed" && !event.isDraft) {
     for (const taskId of event.taskIds) {
       await asana.moveTaskToSection(
@@ -444,10 +505,13 @@ export const handleReview = async (event: SyncEvent) => {
     const alreadyRequested = event.requestedReviewers.some(
       (requested: any) => requested.githubName === event.username
     );
-    const summonsBack =
-      utils.isReviewTier(reviewer) || event.username === OTTO_LOGIN;
-    if (reviewer && summonsBack && !alreadyRequested) {
-      await rerequestReviewer(pullRequestUrl(event), reviewer.githubName);
+    if (reviewer && !alreadyRequested) {
+      const summonsBack =
+        utils.isReviewTier(reviewer) ||
+        (event.username === OTTO_LOGIN && (await wasApprovalDismissed(event)));
+      if (summonsBack) {
+        await rerequestReviewer(pullRequestUrl(event), reviewer.githubName);
+      }
     }
   }
 
@@ -562,8 +626,7 @@ export const reconcileReviewState = async (event: SyncEvent) => {
 
   // A changes-request parks the task until the author re-requests that
   // reviewer - whoever made it, since the review handler parks on any.
-  const reviews = (await githubAxios.get(`${githubUrl}${REQUESTS.REVIEWS_URL}`))
-    .data;
+  const reviews = await readReviews(githubUrl);
   const author = pullRequest.user?.login;
   const threadOpeners = await findThreadOpeners(githubUrl, reviews, author);
   const latest = latestDefinitiveReviews(reviews, author, threadOpeners);

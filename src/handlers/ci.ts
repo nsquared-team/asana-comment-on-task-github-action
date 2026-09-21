@@ -56,6 +56,8 @@ export const handleCiStatus = async (event: SyncEvent) => {
   const otto = asana.ottoUser();
   const taskNotes = `<a href='${event.actionUrl}'> Click Here To Investigate Action </a>`;
   const activeTier = utils.pickReviewerTier(event.requestedReviewers);
+  // Read once, however many tasks the PR is linked to.
+  let reviewers: any[] | undefined;
 
   for (const taskId of event.taskIds) {
     // The CI verdict subtask completes itself when approved/rejected, so the
@@ -73,11 +75,8 @@ export const handleCiStatus = async (event: SyncEvent) => {
           SECTIONS.APPROVED,
           ...SECTIONS.RELEASED_SECTIONS,
         ]);
-        await asana.addRequestedReviews(
-          taskId,
-          await reviewersToCall(event, activeTier),
-          event.prUrl
-        );
+        if (!reviewers) reviewers = await reviewersToCall(event, activeTier);
+        await asana.addRequestedReviews(taskId, reviewers, event.prUrl);
       }
 
       // CI broke: green -> red. Review requests are stale; task goes back.

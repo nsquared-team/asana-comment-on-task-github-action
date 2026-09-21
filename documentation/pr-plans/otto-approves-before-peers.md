@@ -14,8 +14,7 @@ PEER_DEV → DEV → QA exactly as today.
   has submitted no review, calls its peers as before, and the cascade runs on
   to DEV and QA unchanged.
 - [x] While otto is on the PR and still to answer, because GitHub lists it as
-  requested or its standing verdict is anything but an approval (changes
-  requested, a dismissed approval), no human-tier
+  requested or its standing verdict is a changes-request, no human-tier
   "Review" subtask is created, on every path that creates one: a PR opened or
   reopened ready, marked ready for review, a reviewer requested, CI going green
   again, the approval cascade, and the after-event re-check.
@@ -31,6 +30,12 @@ PEER_DEV → DEV → QA exactly as today.
   out are left alone.
 - [x] A task waiting on otto is never moved to Approved, whatever the human
   tiers say; once otto has approved, standing human approvals count as before.
+- [x] Dismissing otto's approval asks it again once, which keeps the stage
+  closed until it answers; dismissing its changes-request overrules it, and
+  otto is not asked again.
+- [x] Otto's verdict is read from every page of the PR's reviews, and a
+  review not yet submitted or from a deleted account can neither hide it nor
+  break the read.
 - [x] Waiting on otto never deletes a subtask and never keeps a task from
   moving to Testing / Review.
 - [x] A test per gated path that fails on `main` and passes with the fix, and
