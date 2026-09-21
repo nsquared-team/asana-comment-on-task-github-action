@@ -11,7 +11,7 @@ PEER_DEV → DEV → QA exactly as today.
 ## Definition of Done
 
 - [x] A PR otto is not on, because GitHub does not list it as requested and it
-  has submitted no review, calls its peers as before, and the cascade runs on
+  has no standing verdict, calls its peers as before, and the cascade runs on
   to DEV and QA unchanged.
 - [x] While otto is on the PR and still to answer, because GitHub lists it as
   requested or its standing verdict is a changes-request, no human-tier
