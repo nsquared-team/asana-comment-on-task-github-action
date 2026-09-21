@@ -190,6 +190,9 @@ const mockLiveAsana = (subtasks: any[]) => {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // Handing out a review reads the PR's reviews for otto's verdict, so a
+  // GitHub with no reviews is the baseline unless a test says otherwise.
+  githubGet.mockResolvedValue({ data: [] });
 });
 
 describe("draft rule", () => {
@@ -447,10 +450,16 @@ describe("reviews", () => {
 
   // GitHub files every inline comment as a review of its own; a review that
   // opened a thread is a verdict, one that only replied is conversation.
+  // Otto's comment review runs the cascade, which reads the PR and its
+  // reviews as well, so only the comments read answers with the comment.
   const inlineComments = (inReplyTo?: number) =>
-    githubGet.mockResolvedValue({
-      data: [{ pull_request_review_id: 7, in_reply_to_id: inReplyTo }],
-    });
+    githubGet.mockImplementation((url: string) =>
+      Promise.resolve({
+        data: url.includes("/comments")
+          ? [{ pull_request_review_id: 7, in_reply_to_id: inReplyTo }]
+          : [],
+      })
+    );
 
   test("a comment review that only leaves notes on the diff is still a rejection", async () => {
     mockAsana({ taskSection: "Testing / Review" });
@@ -832,7 +841,7 @@ describe("bots are not a review tier", () => {
     expect(movesTo("Approved")).toHaveLength(0);
   });
 
-  test("otto requesting changes does not block a tier that has fully approved", async () => {
+  test("otto's standing changes-request keeps a fully approved PR out of Approved", async () => {
     mockAsana();
     githubGet.mockResolvedValue({
       data: [
@@ -849,7 +858,7 @@ describe("bots are not a review tier", () => {
       ],
     });
     await handleReview(approvalBy(PEER.githubName));
-    expect(movesTo("Approved")).toHaveLength(1);
+    expect(movesTo("Approved")).toHaveLength(0);
   });
 
   test("an approval stands through a later changes-request from someone else", async () => {
@@ -877,7 +886,7 @@ describe("bots are not a review tier", () => {
     expect(movesTo("Approved")).toHaveLength(1);
   });
 
-  test("otto still pending neither pings QA nor blocks the human tiers", async () => {
+  test("otto still to answer calls nobody and keeps a fully approved PR out of Approved", async () => {
     mockAsana();
     githubGet.mockResolvedValue({
       data: [
@@ -898,7 +907,7 @@ describe("bots are not a review tier", () => {
       url.includes("/tasks/111/subtasks")
     );
     expect(subtaskCreates).toHaveLength(0);
-    expect(movesTo("Approved")).toHaveLength(1);
+    expect(movesTo("Approved")).toHaveLength(0);
   });
 });
 
@@ -979,9 +988,25 @@ describe("a dismissed review summons its reviewer back", () => {
       eventName: "pull_request_review",
       action: "dismissed",
       reviewState: "dismissed",
+      reviewId: 7,
       username: login,
       commentUrl: `https://github.com/o/r/pull/42#review-${login}`,
     });
+  // GitHub reports a dismissed review as DISMISSED whatever it said; only
+  // the timeline's entry for the dismissal still names it.
+  const dismissedOnTimeline = (state: string) =>
+    githubGet.mockImplementation((url: string) =>
+      Promise.resolve({
+        data: url.includes("/timeline")
+          ? [
+              {
+                event: "review_dismissed",
+                dismissed_review: { review_id: 7, state },
+              },
+            ]
+          : [],
+      })
+    );
 
   test("an approval behind someone else's changes-request still counts and is not resummoned", async () => {
     mockAsana();
@@ -1026,10 +1051,28 @@ describe("a dismissed review summons its reviewer back", () => {
     expect(rerequests()).toHaveLength(0);
   });
 
-  test("a bot's dismissed review is never resummoned", async () => {
+  // Otto's dismissed approval closes the peer stage, so leaving it unasked
+  // would deadlock the PR the same way a tier reviewer's would.
+  test("otto's dismissed approval summons it back like a reviewer's", async () => {
     mockAsana();
+    dismissedOnTimeline("approved");
+    await handleReview(dismissalOf("otto-bot-git"));
+    expect(rerequests()).toHaveLength(1);
+    expect(rerequests()[0][1]).toEqual({ reviewers: ["otto-bot-git"] });
+  });
+
+  // A person dismissing otto's changes-request is overruling it.
+  test("otto's dismissed changes-request does not summon it back", async () => {
+    mockAsana();
+    dismissedOnTimeline("changes_requested");
     await handleReview(dismissalOf("otto-bot-git"));
     expect(rerequests()).toHaveLength(0);
+  });
+
+  test("a dismissal the timeline has not caught up on summons otto back", async () => {
+    mockAsana();
+    await handleReview(dismissalOf("otto-bot-git"));
+    expect(rerequests()).toHaveLength(1);
   });
 
   // GitHub reports every dismissed review as DISMISSED, so a tally that
@@ -1189,7 +1232,7 @@ describe("a merge conflict pauses the cascade", () => {
   const mockGithub = (mergeable: boolean | null, reviews: any[]) =>
     githubGet.mockImplementation((url: string) =>
       Promise.resolve({
-        data: url.endsWith("/reviews") ? reviews : { mergeable },
+        data: url.includes("/reviews") ? reviews : { mergeable },
       })
     );
 
@@ -1718,7 +1761,7 @@ describe("every event restates the review state", () => {
   ) =>
     githubGet.mockImplementation((url: string) =>
       Promise.resolve({
-        data: url.endsWith("/reviews")
+        data: url.includes("/reviews")
           ? reviews
           : url.includes("/timeline")
           ? timeline
@@ -2173,9 +2216,10 @@ describe("every event restates the review state", () => {
     expect(timelineReads()).toHaveLength(0);
   });
 
-  // A bot's approval gates nothing whichever list it sits on, so there is
-  // nothing for the timeline to settle.
-  test("a bot's approval reads no timeline", async () => {
+  // Otto's listing decides whether the peers are called, so the run for its
+  // approval settles a list that still names it the way a tier approver's
+  // does: by the timeline. The stale listing is dropped and the peer called.
+  test("otto's approval reads the timeline while the list still names it", async () => {
     mockAsana({ subtasks: [ciSubtask("approved")] });
     mockGithub(
       readyPr({
@@ -2190,7 +2234,8 @@ describe("every event restates the review state", () => {
       baseEvent({ ...peerApprovalRun, username: "otto-bot-git" })
     );
     expect(movesTo("Testing / Review")).toHaveLength(1);
-    expect(timelineReads()).toHaveLength(0);
+    expect(timelineReads()).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(1);
   });
 
   test("a dismissed reviewer is not summoned again by the re-check", async () => {
@@ -2282,7 +2327,7 @@ describe("the last pending review says it is blocking", () => {
   const githubPr = (requested: any[], reviews: any[] = []) =>
     githubGet.mockImplementation((url: string) =>
       Promise.resolve({
-        data: url.endsWith("/reviews")
+        data: url.includes("/reviews")
           ? reviews
           : {
               state: "open",
@@ -2563,5 +2608,532 @@ describe("the last pending review says it is blocking", () => {
     expect(renameOf("review-qa")?.[1].data.name).toBe(
       "FYI Review - merged to master"
     );
+  });
+});
+
+describe("otto is the stage before the peers", () => {
+  const OTTO = {
+    githubName: "otto-bot-git",
+    asanaId: OTTO_ASANA_ID,
+    team: "BOT",
+  };
+  const DEV = {
+    githubName: "tylerdigital",
+    asanaId: "1992810427453",
+    team: "DEV",
+  };
+
+  const ottoReview = (state: string, submittedAt = "2026-09-20T10:00:00Z") => ({
+    user: { login: OTTO.githubName },
+    state,
+    submitted_at: submittedAt,
+  });
+  const peerApproved = {
+    user: { login: PEER.githubName },
+    state: "APPROVED",
+    submitted_at: "2026-09-20T09:00:00Z",
+  };
+  const rejectedCi = {
+    gid: "ci-1",
+    name: "Automated CI Testing",
+    resource_subtype: "approval",
+    approval_status: "rejected",
+    completed: true,
+    created_by: { gid: OTTO_ASANA_ID },
+    assignee: { gid: OTTO_ASANA_ID },
+  };
+  const pendingReview = (reviewer: any) => ({
+    gid: `rev-${reviewer.githubName}`,
+    name: "Review",
+    resource_subtype: "approval",
+    completed: false,
+    created_by: { gid: OTTO_ASANA_ID },
+    assignee: { gid: reviewer.asanaId },
+  });
+
+  // One mock for every GitHub read a run makes: the PR itself, its reviews,
+  // its timeline, and the review comments the verdict of a comment review
+  // may need.
+  const mockGithub = (
+    pullRequest: any,
+    reviews: any[] = [],
+    timeline: any[] = []
+  ) =>
+    githubGet.mockImplementation((url: string) =>
+      Promise.resolve({
+        data: url.includes("/reviews")
+          ? reviews
+          : url.includes("/timeline")
+          ? timeline
+          : url.includes("/comments")
+          ? []
+          : pullRequest,
+      })
+    );
+
+  const mergeablePr = { mergeable: true, user: { login: "the-author" } };
+  const readyPr = (requested: string[]) => ({
+    state: "open",
+    draft: false,
+    mergeable: true,
+    requested_reviewers: requested.map((login) => ({ login })),
+  });
+  const requestedOnTimeline = (login: string, at: string) => ({
+    event: "review_requested",
+    requested_reviewer: { login },
+    created_at: at,
+  });
+
+  const reviewCreates = () =>
+    asanaPost.mock.calls.filter(
+      ([url, payload]: [string, any]) =>
+        url.includes("/tasks/111/subtasks") &&
+        ["Review", "Blocking Review"].includes(payload.data.name)
+    );
+
+  const reviewRun = (login: string, submittedAt: string, state = "approved") =>
+    baseEvent({
+      eventName: "pull_request_review",
+      action: "submitted",
+      reviewState: state,
+      reviewSubmittedAt: submittedAt,
+      username: login,
+      commentUrl: `https://github.com/r/pull/42#review-${login}`,
+    });
+  const commentEvent = baseEvent({
+    eventName: "issue_comment",
+    action: "created",
+    commentUrl: "https://github.com/r/pull/42#issuecomment-9",
+  });
+
+  test("a PR otto is not on calls its peers as before", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({
+      data: [{ ...peerApproved, user: { login: DEV.githubName } }],
+    });
+    await handlePullRequest(
+      baseEvent({ action: "opened", requestedReviewers: [PEER] })
+    );
+    expect(reviewCreates()).toHaveLength(1);
+  });
+
+  test("a PR opened ready while otto is still to answer moves to Testing / Review but calls nobody", async () => {
+    mockAsana();
+    await handlePullRequest(
+      baseEvent({ action: "opened", requestedReviewers: [OTTO, PEER] })
+    );
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(0);
+  });
+
+  test("a peer requested while otto is still to answer is not called", async () => {
+    mockAsana();
+    await handlePullRequest(
+      baseEvent({
+        action: "review_requested",
+        requestedReviewers: [OTTO, PEER],
+        eventReviewer: PEER,
+      })
+    );
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(0);
+  });
+
+  test("a peer requested after otto's changes-request is not called", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({ data: [ottoReview("CHANGES_REQUESTED")] });
+    await handlePullRequest(
+      baseEvent({
+        action: "review_requested",
+        requestedReviewers: [PEER],
+        eventReviewer: PEER,
+      })
+    );
+    expect(reviewCreates()).toHaveLength(0);
+  });
+
+  // A person dismissing otto's changes-request overruled it. A dismissed
+  // approval closes the stage by asking otto again, not by what it says.
+  test("a peer requested after otto's changes-request was dismissed is called", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({ data: [ottoReview("DISMISSED")] });
+    await handlePullRequest(
+      baseEvent({
+        action: "review_requested",
+        requestedReviewers: [PEER],
+        eventReviewer: PEER,
+      })
+    );
+    expect(reviewCreates()).toHaveLength(1);
+  });
+
+  // Otto files findings below its blocking bar as a comment-only report:
+  // its answer, and on its own an approval.
+  test.each([
+    ["nothing", undefined],
+    ["its approval", ottoReview("APPROVED", "2026-09-20T09:00:00Z")],
+    ["its dismissed approval", ottoReview("DISMISSED", "2026-09-20T09:00:00Z")],
+  ])(
+    "a peer requested after otto's comment-only report following %s is called",
+    async (_, earlier) => {
+      mockAsana();
+      githubGet.mockResolvedValue({
+        data: [earlier, ottoReview("COMMENTED")].filter(Boolean),
+      });
+      await handlePullRequest(
+        baseEvent({
+          action: "review_requested",
+          requestedReviewers: [PEER],
+          eventReviewer: PEER,
+        })
+      );
+      expect(reviewCreates()).toHaveLength(1);
+    }
+  );
+
+  // The report does not prove the earlier findings fixed, so the
+  // changes-request before it stands until otto approves.
+  test("otto's comment-only report inherits the changes-request before it", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({
+      data: [
+        ottoReview("CHANGES_REQUESTED", "2026-09-20T09:00:00Z"),
+        ottoReview("COMMENTED"),
+      ],
+    });
+    await handlePullRequest(
+      baseEvent({
+        action: "review_requested",
+        requestedReviewers: [PEER],
+        eventReviewer: PEER,
+      })
+    );
+    expect(reviewCreates()).toHaveLength(0);
+  });
+
+  test("a review otto has not submitted yet does not hide its approval", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({
+      data: [
+        {
+          user: { login: OTTO.githubName },
+          state: "PENDING",
+          submitted_at: null,
+        },
+        ottoReview("APPROVED"),
+      ],
+    });
+    await handlePullRequest(
+      baseEvent({
+        action: "review_requested",
+        requestedReviewers: [PEER],
+        eventReviewer: PEER,
+      })
+    );
+    expect(reviewCreates()).toHaveLength(1);
+  });
+
+  test("a review from a deleted account does not break the read", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({
+      data: [
+        {
+          user: null,
+          state: "COMMENTED",
+          submitted_at: "2026-09-20T10:00:00Z",
+        },
+      ],
+    });
+    await handlePullRequest(
+      baseEvent({
+        action: "review_requested",
+        requestedReviewers: [PEER],
+        eventReviewer: PEER,
+      })
+    );
+    expect(reviewCreates()).toHaveLength(1);
+  });
+
+  test("an unreadable reviews list calls nobody but still moves the task", async () => {
+    mockAsana();
+    githubGet.mockRejectedValue(new Error("GitHub unreachable"));
+    await handlePullRequest(
+      baseEvent({ action: "opened", requestedReviewers: [PEER] })
+    );
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(0);
+  });
+
+  test("an unreadable reviews list still records the CI verdict", async () => {
+    mockAsana({ subtasks: [rejectedCi] });
+    githubGet.mockRejectedValue(new Error("GitHub unreachable"));
+    await handleCiStatus(
+      baseEvent({
+        action: "synchronize",
+        ciStatus: "approved",
+        requestedReviewers: [PEER],
+      })
+    );
+    const verdictWrites = asanaPut.mock.calls.filter(([url]: [string]) =>
+      url.includes(rejectedCi.gid)
+    );
+    expect(verdictWrites).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(0);
+  });
+
+  test("a peer requested after otto approved is called", async () => {
+    mockAsana();
+    githubGet.mockResolvedValue({
+      data: [
+        ottoReview("CHANGES_REQUESTED", "2026-09-20T09:00:00Z"),
+        ottoReview("APPROVED"),
+      ],
+    });
+    await handlePullRequest(
+      baseEvent({
+        action: "review_requested",
+        requestedReviewers: [PEER],
+        eventReviewer: PEER,
+      })
+    );
+    expect(reviewCreates()).toHaveLength(1);
+  });
+
+  test("CI going green again calls nobody while otto is still to answer", async () => {
+    mockAsana({ subtasks: [rejectedCi] });
+    await handleCiStatus(
+      baseEvent({
+        action: "synchronize",
+        ciStatus: "approved",
+        requestedReviewers: [OTTO, PEER],
+      })
+    );
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(0);
+  });
+
+  test("asking otto again deletes no Review already handed out", async () => {
+    mockAsana({
+      taskSection: "Testing / Review",
+      subtasks: [pendingReview(PEER)],
+    });
+    await handlePullRequest(
+      baseEvent({
+        action: "review_requested",
+        requestedReviewers: [OTTO, PEER],
+        eventReviewer: OTTO,
+      })
+    );
+    expect(asanaDelete).not.toHaveBeenCalled();
+    expect(reviewCreates()).toHaveLength(0);
+  });
+
+  test("the peers approving while otto is still to answer hands DEV nothing", async () => {
+    mockAsana();
+    mockGithub(mergeablePr, [peerApproved]);
+    await handleReview({
+      ...reviewRun(PEER.githubName, peerApproved.submitted_at),
+      requestedReviewers: [OTTO, DEV],
+    });
+    expect(reviewCreates()).toHaveLength(0);
+    expect(movesTo("Approved")).toHaveLength(0);
+  });
+
+  test("otto's approval hands DEV their review once the peers have approved", async () => {
+    mockAsana();
+    mockGithub(mergeablePr, [peerApproved, ottoReview("APPROVED")]);
+    // The payload still lists otto: GitHub's list is read before the
+    // approval takes it off.
+    await handleReview({
+      ...reviewRun(OTTO.githubName, "2026-09-20T10:00:00Z"),
+      requestedReviewers: [OTTO, DEV],
+    });
+    expect(reviewCreates()).toHaveLength(1);
+    expect(reviewCreates()[0][1].data.assignee).toBe(DEV.asanaId);
+  });
+
+  test("otto's comment-only report hands DEV their review the way its approval does", async () => {
+    mockAsana();
+    mockGithub(mergeablePr, [peerApproved, ottoReview("COMMENTED")]);
+    await handleReview({
+      ...reviewRun(OTTO.githubName, "2026-09-20T10:00:00Z", "commented"),
+      requestedReviewers: [OTTO, DEV],
+    });
+    expect(reviewCreates()).toHaveLength(1);
+    expect(reviewCreates()[0][1].data.assignee).toBe(DEV.asanaId);
+  });
+
+  // Fails with otto left on the fresh list: the re-check would then read its
+  // own approval's run as otto still to answer and call nobody.
+  test("otto's approval calls the peers even while GitHub's list still names otto", async () => {
+    mockAsana();
+    mockGithub(
+      readyPr([OTTO.githubName, PEER.githubName]),
+      [ottoReview("APPROVED", "2026-09-20T10:00:00Z")],
+      [requestedOnTimeline(OTTO.githubName, "2026-09-20T09:00:00Z")]
+    );
+    await reconcileReviewState(
+      reviewRun(OTTO.githubName, "2026-09-20T10:00:00Z")
+    );
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(1);
+    expect(reviewCreates()[0][1].data.assignee).toBe(PEER.asanaId);
+  });
+
+  test("otto's comment-only report calls the peers even while GitHub's list still names otto", async () => {
+    mockAsana();
+    mockGithub(
+      readyPr([OTTO.githubName, PEER.githubName]),
+      [ottoReview("COMMENTED", "2026-09-20T10:00:00Z")],
+      [requestedOnTimeline(OTTO.githubName, "2026-09-20T09:00:00Z")]
+    );
+    await reconcileReviewState(
+      reviewRun(OTTO.githubName, "2026-09-20T10:00:00Z", "commented")
+    );
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(1);
+    expect(reviewCreates()[0][1].data.assignee).toBe(PEER.asanaId);
+  });
+
+  test("otto asked again after approving closes the stage until it answers", async () => {
+    mockAsana();
+    mockGithub(
+      readyPr([OTTO.githubName, PEER.githubName]),
+      [ottoReview("APPROVED", "2026-09-20T10:00:00Z")],
+      [requestedOnTimeline(OTTO.githubName, "2026-09-20T11:00:00Z")]
+    );
+    await reconcileReviewState(
+      reviewRun(OTTO.githubName, "2026-09-20T10:00:00Z")
+    );
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(0);
+  });
+
+  test("the re-check leaves a task waiting on otto in Testing / Review with nobody called", async () => {
+    mockAsana();
+    mockGithub(readyPr([OTTO.githubName, PEER.githubName]));
+    await reconcileReviewState(commentEvent);
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+    expect(reviewCreates()).toHaveLength(0);
+  });
+
+  test("a fully approved PR waiting on otto is not moved to Approved by the re-check", async () => {
+    mockAsana();
+    mockGithub(readyPr([OTTO.githubName]), [peerApproved]);
+    await reconcileReviewState(commentEvent);
+    expect(movesTo("Approved")).toHaveLength(0);
+  });
+
+  test("the re-check calls the peers once otto has approved", async () => {
+    mockAsana();
+    mockGithub(readyPr([PEER.githubName]), [
+      ottoReview("CHANGES_REQUESTED", "2026-09-20T09:00:00Z"),
+      ottoReview("APPROVED"),
+    ]);
+    await reconcileReviewState(commentEvent);
+    expect(reviewCreates()).toHaveLength(1);
+  });
+
+  // The peers were requested while the PR waited on otto, so that request
+  // called nobody: otto's answer is what calls them, on its own run, not
+  // the re-check, which stands down while GitHub has not computed
+  // mergeability or the last CI verdict is a rejection.
+  test("otto's approval hands the peers their review on its own run", async () => {
+    mockAsana();
+    mockGithub(mergeablePr, [ottoReview("APPROVED")]);
+    await handleReview({
+      ...reviewRun(OTTO.githubName, "2026-09-20T10:00:00Z"),
+      requestedReviewers: [OTTO, PEER],
+    });
+    expect(reviewCreates()).toHaveLength(1);
+    expect(reviewCreates()[0][1].data.assignee).toBe(PEER.asanaId);
+  });
+
+  test("otto's comment-only report hands the peers their review the way its approval does", async () => {
+    mockAsana();
+    mockGithub(mergeablePr, [ottoReview("COMMENTED")]);
+    await handleReview({
+      ...reviewRun(OTTO.githubName, "2026-09-20T10:00:00Z", "commented"),
+      requestedReviewers: [OTTO, PEER],
+    });
+    expect(reviewCreates()).toHaveLength(1);
+    expect(reviewCreates()[0][1].data.assignee).toBe(PEER.asanaId);
+  });
+
+  test("a peer already holding a Review is not handed a second by otto's approval", async () => {
+    mockAsana({ subtasks: [pendingReview(PEER)] });
+    mockGithub(mergeablePr, [ottoReview("APPROVED")]);
+    await handleReview({
+      ...reviewRun(OTTO.githubName, "2026-09-20T10:00:00Z"),
+      requestedReviewers: [OTTO, PEER],
+    });
+    expect(reviewCreates()).toHaveLength(0);
+  });
+
+  test("a review from a deleted account does not break the cascade", async () => {
+    mockAsana();
+    mockGithub(mergeablePr, [
+      { user: null, state: "COMMENTED", submitted_at: "2026-09-20T09:00:00Z" },
+      ottoReview("APPROVED"),
+    ]);
+    await handleReview({
+      ...reviewRun(OTTO.githubName, "2026-09-20T10:00:00Z"),
+      requestedReviewers: [OTTO, PEER],
+    });
+    expect(reviewCreates()).toHaveLength(1);
+  });
+
+  // GitHub pages the reviews; otto's latest verdict is on the last page.
+  test("otto's approval on a later page of the reviews is read", async () => {
+    mockAsana();
+    const filler = {
+      user: { login: DEV.githubName },
+      state: "COMMENTED",
+      submitted_at: "2026-09-20T09:30:00Z",
+    };
+    const pages: { [page: string]: any[] } = {
+      "1": [
+        ottoReview("CHANGES_REQUESTED", "2026-09-20T09:00:00Z"),
+        ...Array(99).fill(filler),
+      ],
+      "2": [ottoReview("APPROVED")],
+    };
+    githubGet.mockImplementation((url: string) =>
+      Promise.resolve({
+        data: pages[url.split("page=").pop() as string] || pages["1"],
+      })
+    );
+    await handlePullRequest(
+      baseEvent({
+        action: "review_requested",
+        requestedReviewers: [PEER],
+        eventReviewer: PEER,
+      })
+    );
+    expect(reviewCreates()).toHaveLength(1);
+  });
+
+  test("CI going green again reads the reviews once however many tasks the PR is linked to", async () => {
+    mockAsana({ subtasks: [rejectedCi] });
+    await handleCiStatus(
+      baseEvent({
+        action: "synchronize",
+        ciStatus: "approved",
+        taskIds: ["111", "222"],
+        requestedReviewers: [PEER],
+      })
+    );
+    const reviewReads = githubGet.mock.calls.filter(([url]: [string]) =>
+      url.includes("/reviews")
+    );
+    expect(reviewReads).toHaveLength(1);
+  });
+
+  test("a PR linked to no task reads nothing", async () => {
+    mockAsana();
+    await handlePullRequest(
+      baseEvent({ action: "opened", taskIds: [], requestedReviewers: [PEER] })
+    );
+    expect(githubGet).not.toHaveBeenCalled();
   });
 });
