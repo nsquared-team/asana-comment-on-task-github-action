@@ -12,7 +12,7 @@ export const TASKS_URL = "/tasks/";
 export const SECTIONS_URL = "/sections/";
 export const STORIES_URL = "/stories/";
 export const SUBTASKS_URL =
-  "/subtasks?limit=100&opt_fields=completed,resource_subtype,assignee,created_by,created_at,name,approval_status";
+  "/subtasks?limit=100&opt_fields=completed,resource_subtype,assignee,created_by,created_at,name,approval_status,notes";
 export const STORIES_LIST_PARAMS = "?limit=100";
 export const ADD_FOLLOWERS_URL = "/addFollowers";
 export const ADD_TASK_URL = "/addTask";
@@ -24,6 +24,7 @@ export const REVIEWS_URL = `/reviews?per_page=${REVIEWS_PAGE_SIZE}`;
 export const REVIEW_COMMENTS_PAGE_SIZE = 100;
 export const REVIEW_COMMENTS_URL = `/comments?per_page=${REVIEW_COMMENTS_PAGE_SIZE}`;
 export const REVIEWERS_URL = "/requested_reviewers";
+export const COMPARE_URL = "/compare/";
 // The timeline hangs off the issues path, not pulls, and it is the only
 // place GitHub timestamps a review request - `requested_reviewers` is a bare
 // list with no times on it.

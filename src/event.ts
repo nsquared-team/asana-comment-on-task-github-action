@@ -2,7 +2,12 @@ import { getInput } from "@actions/core";
 import * as INPUTS from "./constants/inputs";
 import * as utils from "./utils";
 
-export const CI_STATUSES = ["approved", "rejected", "edit_pr_description"];
+export const CI_STATUSES = [
+  "approved",
+  "rejected",
+  "edit_pr_description",
+  "pending",
+];
 
 export interface SyncEvent {
   eventName: string;
@@ -17,6 +22,7 @@ export interface SyncEvent {
   prMerged: boolean;
   prBaseRef: string;
   isDraft: boolean;
+  headSha: string;
   reviewId?: number;
   reviewState: string;
   reviewSubmittedAt: string;
@@ -63,6 +69,7 @@ export const buildEvent = (context: any): SyncEvent => {
     prMerged: payload.pull_request?.merged || false,
     prBaseRef: payload.pull_request?.base?.ref || "",
     isDraft: payload.pull_request?.draft || false,
+    headSha: payload.pull_request?.head?.sha || "",
     reviewId: payload.review?.id,
     reviewState: payload.review?.state || "",
     reviewSubmittedAt: payload.review?.submitted_at || "",

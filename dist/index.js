@@ -16082,7 +16082,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.updateApprovalSubtask = exports.addFyiReviews = exports.addRequestedReviews = exports.addApprovalTask = exports.cleanupApprovalTasks = exports.relabelReviewSubtasksAsFyi = exports.deleteReviewSubtasks = exports.syncBlockingReviewTitles = exports.isPendingReviewSubtask = exports.BLOCKING_REVIEW_NAME = exports.REVIEW_NAME = exports.deleteApprovalTasks = exports.getApprovalSubtask = exports.getAllApprovalSubtasks = exports.getStories = exports.addFollowers = exports.setTaskIncomplete = exports.moveTaskToSection = exports.getTask = exports.getAllPages = exports.ottoUser = void 0;
+exports.updateApprovalSubtask = exports.addFyiReviews = exports.addRequestedReviews = exports.addApprovalTask = exports.cleanupApprovalTasks = exports.relabelReviewSubtasksAsFyi = exports.deleteReviewSubtasks = exports.syncBlockingReviewTitles = exports.isPendingReviewSubtask = exports.BLOCKING_REVIEW_NAME = exports.REVIEW_NAME = exports.deleteApprovalTasks = exports.getCiSubtask = exports.getApprovalSubtask = exports.getAllApprovalSubtasks = exports.CI_SUBTASK_NAME = exports.getStories = exports.addFollowers = exports.setTaskIncomplete = exports.moveTaskToSection = exports.getTask = exports.getAllPages = exports.ottoUser = void 0;
 const core_1 = __nccwpck_require__(7484);
 const asanaAxios_1 = __importDefault(__nccwpck_require__(5940));
 const REQUESTS = __importStar(__nccwpck_require__(4291));
@@ -16166,10 +16166,14 @@ const getStories = (taskId) => __awaiter(void 0, void 0, void 0, function* () {
     return (0, exports.getAllPages)(url);
 });
 exports.getStories = getStories;
+exports.CI_SUBTASK_NAME = "Automated CI Testing";
+// The CI record is not a review: it is read only through getCiSubtask, so no
+// review path (a verdict, a tier cleanup, an unmerged close) can touch it.
 const getAllApprovalSubtasks = (taskId, creator) => __awaiter(void 0, void 0, void 0, function* () {
     const url = `${REQUESTS.TASKS_URL}${taskId}${REQUESTS.SUBTASKS_URL}`;
     const subtasks = yield (0, exports.getAllPages)(url);
     return subtasks.filter((subtask) => subtask.resource_subtype === "approval" &&
+        subtask.name !== exports.CI_SUBTASK_NAME &&
         !subtask.completed &&
         subtask.created_by &&
         subtask.created_by.gid === (creator === null || creator === void 0 ? void 0 : creator.asanaId));
@@ -16178,16 +16182,31 @@ exports.getAllApprovalSubtasks = getAllApprovalSubtasks;
 // An undefined `isComplete` matches an approval subtask in whatever state it
 // is in. Asking whether a reviewer already has one has to span both: answering
 // a review completes its subtask, so an incomplete-only look would report the
-// reviewer as empty-handed moments after they signed off.
+// reviewer as empty-handed moments after they signed off. Never returns the
+// CI record; that is getCiSubtask's.
 const getApprovalSubtask = (taskId, isComplete, assignee) => __awaiter(void 0, void 0, void 0, function* () {
     const url = `${REQUESTS.TASKS_URL}${taskId}${REQUESTS.SUBTASKS_URL}`;
     const subtasks = yield (0, exports.getAllPages)(url);
     return subtasks.find((subtask) => subtask.resource_subtype === "approval" &&
+        subtask.name !== exports.CI_SUBTASK_NAME &&
         (isComplete === undefined || subtask.completed === isComplete) &&
         subtask.assignee &&
         subtask.assignee.gid === (assignee === null || assignee === void 0 ? void 0 : assignee.asanaId));
 });
 exports.getApprovalSubtask = getApprovalSubtask;
+// The CI record is assigned to otto and in any completion state: a `pending`
+// one is incomplete, a verdict completes itself.
+const getCiSubtask = (taskId) => __awaiter(void 0, void 0, void 0, function* () {
+    const url = `${REQUESTS.TASKS_URL}${taskId}${REQUESTS.SUBTASKS_URL}`;
+    const subtasks = yield (0, exports.getAllPages)(url);
+    return subtasks.find((subtask) => {
+        var _a, _b;
+        return subtask.resource_subtype === "approval" &&
+            subtask.name === exports.CI_SUBTASK_NAME &&
+            ((_a = subtask.assignee) === null || _a === void 0 ? void 0 : _a.gid) === ((_b = (0, exports.ottoUser)()) === null || _b === void 0 ? void 0 : _b.asanaId);
+    });
+});
+exports.getCiSubtask = getCiSubtask;
 const deleteApprovalTasks = (approvalSubtasks) => __awaiter(void 0, void 0, void 0, function* () {
     var _c;
     for (const subtask of approvalSubtasks) {
@@ -16212,7 +16231,6 @@ exports.deleteApprovalTasks = deleteApprovalTasks;
 // tells its assignee whether the PR is waiting on them alone.
 exports.REVIEW_NAME = "Review";
 exports.BLOCKING_REVIEW_NAME = "Blocking Review";
-const CI_SUBTASK_NAME = "Automated CI Testing";
 const isPendingReviewName = (name) => name === exports.REVIEW_NAME || name === exports.BLOCKING_REVIEW_NAME;
 const isPendingReviewSubtask = (subtask) => isPendingReviewName(subtask === null || subtask === void 0 ? void 0 : subtask.name);
 exports.isPendingReviewSubtask = isPendingReviewSubtask;
@@ -16242,13 +16260,10 @@ const syncBlockingReviewTitles = (taskId, outstanding) => __awaiter(void 0, void
     }
 });
 exports.syncBlockingReviewTitles = syncBlockingReviewTitles;
-// Reviewer approval subtasks are named "Review" or "Blocking Review"; the CI
-// verdict subtask is named "Automated CI Testing" and must survive review
-// cleanups.
+// getAllApprovalSubtasks never returns the CI record, so this deletes reviews
+// only and the CI verdict survives every review cleanup.
 const deleteReviewSubtasks = (taskId) => __awaiter(void 0, void 0, void 0, function* () {
-    const subtasks = yield (0, exports.getAllApprovalSubtasks)(taskId, (0, exports.ottoUser)());
-    const reviewSubtasks = subtasks.filter((subtask) => subtask.name !== CI_SUBTASK_NAME);
-    yield (0, exports.deleteApprovalTasks)(reviewSubtasks);
+    yield (0, exports.deleteApprovalTasks)(yield (0, exports.getAllApprovalSubtasks)(taskId, (0, exports.ottoUser)()));
 });
 exports.deleteReviewSubtasks = deleteReviewSubtasks;
 // Once the PR is merged nobody is waiting on an unanswered review, but the
@@ -16393,6 +16408,110 @@ exports.updateApprovalSubtask = updateApprovalSubtask;
 
 /***/ }),
 
+/***/ 280:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ciClearsReview = exports.isCurrentCommit = exports.testedCommitOf = exports.ciSubtaskNotes = void 0;
+const githubAxios_1 = __importDefault(__nccwpck_require__(1125));
+const REQUESTS = __importStar(__nccwpck_require__(4291));
+const asana = __importStar(__nccwpck_require__(7369));
+const utils = __importStar(__nccwpck_require__(8541));
+// A reviewer is asked only for the commit CI passed, so a red, running or
+// out-of-date result holds every call and promotion.
+const TESTED_COMMIT = /Tested commit: ([0-9a-f]{7,40})/;
+const BYPASS_MARKER = "ci bypass";
+const ciSubtaskNotes = (event) => {
+    const link = `<a href='${event.actionUrl}'> Click Here To Investigate Action </a>`;
+    return event.headSha ? `${link}\nTested commit: ${event.headSha}` : link;
+};
+exports.ciSubtaskNotes = ciSubtaskNotes;
+const testedCommitOf = (ciSubtask) => { var _a, _b; return ((_b = (_a = ciSubtask === null || ciSubtask === void 0 ? void 0 : ciSubtask.notes) === null || _a === void 0 ? void 0 : _a.match(TESTED_COMMIT)) === null || _b === void 0 ? void 0 : _b[1]) || ""; };
+exports.testedCommitOf = testedCommitOf;
+const readHeadSha = (event) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
+    const url = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.PULLS_URL}${event.prNumber}`;
+    return (_a = (yield githubAxios_1.default.get(url)).data.head) === null || _a === void 0 ? void 0 : _a.sha;
+});
+// A commit pushed after CI passed still counts when its subject carries the
+// bypass marker: CI cancels its own run on those, so no result for them will
+// ever come. Anything else, or a history that is not a straight extension of
+// the tested commit, is untested code.
+const isCurrentCommit = (event, testedSha, headSha) => __awaiter(void 0, void 0, void 0, function* () {
+    var _b;
+    if (!testedSha)
+        return true;
+    const head = headSha || (yield readHeadSha(event));
+    if (!head)
+        return false;
+    if (head === testedSha)
+        return true;
+    const url = `${REQUESTS.REPOS_URL}${event.repoFullName}${REQUESTS.COMPARE_URL}${testedSha}...${head}`;
+    let comparison;
+    try {
+        comparison = (yield githubAxios_1.default.get(url)).data;
+    }
+    catch (error) {
+        if (utils.isAxiosError(error) && ((_b = error.response) === null || _b === void 0 ? void 0 : _b.status) === 404) {
+            return false;
+        }
+        throw error;
+    }
+    return (comparison.status === "ahead" &&
+        comparison.commits.length === comparison.total_commits &&
+        comparison.commits.every((entry) => entry.commit.message.split("\n")[0].includes(BYPASS_MARKER)));
+});
+exports.isCurrentCommit = isCurrentCommit;
+const ciClearsReview = (event, taskId, headSha) => __awaiter(void 0, void 0, void 0, function* () {
+    const record = yield asana.getCiSubtask(taskId);
+    if (!record)
+        return true;
+    if (record.approval_status !== "approved")
+        return false;
+    return (0, exports.isCurrentCommit)(event, (0, exports.testedCommitOf)(record), headSha);
+});
+exports.ciClearsReview = ciClearsReview;
+
+
+/***/ }),
+
 /***/ 5802:
 /***/ ((__unused_webpack_module, exports) => {
 
@@ -16428,7 +16547,7 @@ exports.PR_DESCRIPTION = "pr-description";
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.TIMELINE_URL = exports.TIMELINE_PAGE_SIZE = exports.ISSUES_URL = exports.REVIEWERS_URL = exports.REVIEW_COMMENTS_URL = exports.REVIEW_COMMENTS_PAGE_SIZE = exports.REVIEWS_URL = exports.REVIEWS_PAGE_SIZE = exports.PULLS_URL = exports.REPOS_URL = exports.BASE_GITHUB_URL = exports.ADD_TASK_URL = exports.ADD_FOLLOWERS_URL = exports.STORIES_LIST_PARAMS = exports.SUBTASKS_URL = exports.STORIES_URL = exports.SECTIONS_URL = exports.TASKS_URL = exports.PROJECTS_URL = exports.BASE_ASANA_URL = exports.IDEMPOTENT_METHODS = exports.MAX_RETRY_DELAY = exports.RETRY_DELAY = exports.RETRIES = void 0;
+exports.TIMELINE_URL = exports.TIMELINE_PAGE_SIZE = exports.ISSUES_URL = exports.COMPARE_URL = exports.REVIEWERS_URL = exports.REVIEW_COMMENTS_URL = exports.REVIEW_COMMENTS_PAGE_SIZE = exports.REVIEWS_URL = exports.REVIEWS_PAGE_SIZE = exports.PULLS_URL = exports.REPOS_URL = exports.BASE_GITHUB_URL = exports.ADD_TASK_URL = exports.ADD_FOLLOWERS_URL = exports.STORIES_LIST_PARAMS = exports.SUBTASKS_URL = exports.STORIES_URL = exports.SECTIONS_URL = exports.TASKS_URL = exports.PROJECTS_URL = exports.BASE_ASANA_URL = exports.IDEMPOTENT_METHODS = exports.MAX_RETRY_DELAY = exports.RETRY_DELAY = exports.RETRIES = void 0;
 exports.RETRIES = 3;
 exports.RETRY_DELAY = 1000;
 // Ceiling for a server-supplied Retry-After, so a long rate-limit window
@@ -16442,7 +16561,7 @@ exports.PROJECTS_URL = "/projects/";
 exports.TASKS_URL = "/tasks/";
 exports.SECTIONS_URL = "/sections/";
 exports.STORIES_URL = "/stories/";
-exports.SUBTASKS_URL = "/subtasks?limit=100&opt_fields=completed,resource_subtype,assignee,created_by,created_at,name,approval_status";
+exports.SUBTASKS_URL = "/subtasks?limit=100&opt_fields=completed,resource_subtype,assignee,created_by,created_at,name,approval_status,notes";
 exports.STORIES_LIST_PARAMS = "?limit=100";
 exports.ADD_FOLLOWERS_URL = "/addFollowers";
 exports.ADD_TASK_URL = "/addTask";
@@ -16454,6 +16573,7 @@ exports.REVIEWS_URL = `/reviews?per_page=${exports.REVIEWS_PAGE_SIZE}`;
 exports.REVIEW_COMMENTS_PAGE_SIZE = 100;
 exports.REVIEW_COMMENTS_URL = `/comments?per_page=${exports.REVIEW_COMMENTS_PAGE_SIZE}`;
 exports.REVIEWERS_URL = "/requested_reviewers";
+exports.COMPARE_URL = "/compare/";
 // The timeline hangs off the issues path, not pulls, and it is the only
 // place GitHub timestamps a review request - `requested_reviewers` is a bare
 // list with no times on it.
@@ -16732,9 +16852,14 @@ exports.buildEvent = exports.CI_STATUSES = void 0;
 const core_1 = __nccwpck_require__(7484);
 const INPUTS = __importStar(__nccwpck_require__(2120));
 const utils = __importStar(__nccwpck_require__(8541));
-exports.CI_STATUSES = ["approved", "rejected", "edit_pr_description"];
+exports.CI_STATUSES = [
+    "approved",
+    "rejected",
+    "edit_pr_description",
+    "pending",
+];
 const buildEvent = (context) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1, _2;
     const payload = context.payload;
     const pullRequest = payload.pull_request || payload.issue;
     const commentText = (0, core_1.getInput)(INPUTS.COMMENT_TEXT);
@@ -16758,19 +16883,20 @@ const buildEvent = (context) => {
         prMerged: ((_k = payload.pull_request) === null || _k === void 0 ? void 0 : _k.merged) || false,
         prBaseRef: ((_m = (_l = payload.pull_request) === null || _l === void 0 ? void 0 : _l.base) === null || _m === void 0 ? void 0 : _m.ref) || "",
         isDraft: ((_o = payload.pull_request) === null || _o === void 0 ? void 0 : _o.draft) || false,
-        reviewId: (_p = payload.review) === null || _p === void 0 ? void 0 : _p.id,
-        reviewState: ((_q = payload.review) === null || _q === void 0 ? void 0 : _q.state) || "",
-        reviewSubmittedAt: ((_r = payload.review) === null || _r === void 0 ? void 0 : _r.submitted_at) || "",
-        reviewBody: ((_s = payload.review) === null || _s === void 0 ? void 0 : _s.body) || "",
-        commentUrl: ((_t = payload.comment) === null || _t === void 0 ? void 0 : _t.html_url) || ((_u = payload.review) === null || _u === void 0 ? void 0 : _u.html_url) || "",
-        rawCommentBody: ((_v = payload.comment) === null || _v === void 0 ? void 0 : _v.body) || ((_w = payload.review) === null || _w === void 0 ? void 0 : _w.body) || "",
-        commentPath: ((_x = payload.comment) === null || _x === void 0 ? void 0 : _x.path) || "",
-        commentLine: (_y = payload.comment) === null || _y === void 0 ? void 0 : _y.original_line,
+        headSha: ((_q = (_p = payload.pull_request) === null || _p === void 0 ? void 0 : _p.head) === null || _q === void 0 ? void 0 : _q.sha) || "",
+        reviewId: (_r = payload.review) === null || _r === void 0 ? void 0 : _r.id,
+        reviewState: ((_s = payload.review) === null || _s === void 0 ? void 0 : _s.state) || "",
+        reviewSubmittedAt: ((_t = payload.review) === null || _t === void 0 ? void 0 : _t.submitted_at) || "",
+        reviewBody: ((_u = payload.review) === null || _u === void 0 ? void 0 : _u.body) || "",
+        commentUrl: ((_v = payload.comment) === null || _v === void 0 ? void 0 : _v.html_url) || ((_w = payload.review) === null || _w === void 0 ? void 0 : _w.html_url) || "",
+        rawCommentBody: ((_x = payload.comment) === null || _x === void 0 ? void 0 : _x.body) || ((_y = payload.review) === null || _y === void 0 ? void 0 : _y.body) || "",
+        commentPath: ((_z = payload.comment) === null || _z === void 0 ? void 0 : _z.path) || "",
+        commentLine: (_0 = payload.comment) === null || _0 === void 0 ? void 0 : _0.original_line,
         // "file" for a whole-file review comment, "line" otherwise. GitHub still
         // reports original_line as 1 on a file-level comment, so this is the only
         // field that tells the two apart.
-        commentSubjectType: ((_z = payload.comment) === null || _z === void 0 ? void 0 : _z.subject_type) || "",
-        commentInReplyTo: (_0 = payload.comment) === null || _0 === void 0 ? void 0 : _0.in_reply_to_id,
+        commentSubjectType: ((_1 = payload.comment) === null || _1 === void 0 ? void 0 : _1.subject_type) || "",
+        commentInReplyTo: (_2 = payload.comment) === null || _2 === void 0 ? void 0 : _2.in_reply_to_id,
         username,
         requestedReviewers,
         eventReviewer: payload.requested_reviewer
@@ -16967,11 +17093,9 @@ const githubAxios_1 = __importDefault(__nccwpck_require__(1125));
 const REQUESTS = __importStar(__nccwpck_require__(4291));
 const SECTIONS = __importStar(__nccwpck_require__(6081));
 const asana = __importStar(__nccwpck_require__(7369));
-const utils = __importStar(__nccwpck_require__(8541));
-const review_1 = __nccwpck_require__(6433);
+const ciGate_1 = __nccwpck_require__(280);
 // CI runs fire on these pull_request actions in the consumer workflows.
 const CI_ACTIONS = ["opened", "synchronize", "reopened", "ready_for_review"];
-const CI_SUBTASK_NAME = "Automated CI Testing";
 const editPrDescription = (event) => __awaiter(void 0, void 0, void 0, function* () {
     const today = new Date();
     const [date, time] = today.toISOString().split("T");
@@ -17000,6 +17124,12 @@ const editPrDescription = (event) => __awaiter(void 0, void 0, void 0, function*
     }
     yield githubAxios_1.default.patch(githubUrl, { body });
 });
+// A red parks the task and clears the reviews asked for the commit it broke.
+// Answered reviews are completed subtasks, which the delete leaves alone.
+const parkTask = (taskId) => __awaiter(void 0, void 0, void 0, function* () {
+    yield asana.deleteReviewSubtasks(taskId);
+    yield asana.moveTaskToSection(taskId, SECTIONS.NEXT, SECTIONS.PROTECTED_FROM_DEMOTION);
+});
 const handleCiStatus = (event) => __awaiter(void 0, void 0, void 0, function* () {
     if (!CI_ACTIONS.includes(event.action))
         return;
@@ -17008,46 +17138,48 @@ const handleCiStatus = (event) => __awaiter(void 0, void 0, void 0, function* ()
         return;
     }
     const otto = asana.ottoUser();
-    const taskNotes = `<a href='${event.actionUrl}'> Click Here To Investigate Action </a>`;
-    const activeTier = utils.pickReviewerTier(event.requestedReviewers);
-    // Read once, however many tasks the PR is linked to.
-    let reviewers;
+    const taskNotes = (0, ciGate_1.ciSubtaskNotes)(event);
     for (const taskId of event.taskIds) {
-        // The CI verdict subtask completes itself when approved/rejected, so the
-        // latest verdict lives on the completed subtask assigned to Otto.
-        const ciSubtask = yield asana.getApprovalSubtask(taskId, true, otto);
+        // The record holds CI's latest word on the task: pending while a run is
+        // testing a commit, then the verdict it reached.
+        const ciSubtask = yield asana.getCiSubtask(taskId);
+        const previous = ciSubtask === null || ciSubtask === void 0 ? void 0 : ciSubtask.approval_status;
+        // The red stands until CI reports again: that report is what tells the
+        // green that follows that CI, not a person, parked the task.
+        if (event.ciStatus === "pending" && previous === "rejected")
+            continue;
+        if (event.ciStatus === "rejected")
+            yield parkTask(taskId);
         if (ciSubtask) {
-            // CI recovered: red -> green. Only a ready PR re-enters review.
-            if (ciSubtask.approval_status === "rejected" &&
-                event.ciStatus === "approved" &&
-                !event.isDraft) {
-                yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, [
-                    SECTIONS.APPROVED,
-                    ...SECTIONS.RELEASED_SECTIONS,
-                ]);
-                if (!reviewers)
-                    reviewers = yield (0, review_1.reviewersToCall)(event, activeTier);
-                yield asana.addRequestedReviews(taskId, reviewers, event.prUrl);
-            }
-            // CI broke: green -> red. Review requests are stale; task goes back.
-            if (ciSubtask.approval_status === "approved" &&
-                event.ciStatus === "rejected") {
-                yield asana.deleteReviewSubtasks(taskId);
-                yield asana.moveTaskToSection(taskId, SECTIONS.NEXT, SECTIONS.PROTECTED_FROM_DEMOTION);
-            }
             yield asana.updateApprovalSubtask(ciSubtask.gid, {
                 due_on: new Date().toISOString().substring(0, 10),
                 approval_status: event.ciStatus,
                 html_notes: `<body>${taskNotes}</body>`,
             });
-            continue;
         }
-        // First CI verdict for this task.
-        if (event.ciStatus === "rejected") {
-            yield asana.deleteReviewSubtasks(taskId);
-            yield asana.moveTaskToSection(taskId, SECTIONS.NEXT, SECTIONS.PROTECTED_FROM_DEMOTION);
+        else {
+            yield asana.addApprovalTask(taskId, otto, asana.CI_SUBTASK_NAME, event.ciStatus, taskNotes);
         }
-        yield asana.addApprovalTask(taskId, otto, CI_SUBTASK_NAME, event.ciStatus, taskNotes);
+        // CI recovered, or finished the run it announced: only a ready PR whose
+        // head is the tested commit re-enters review. Reviewers are called by the
+        // re-check that follows, from GitHub's fresh list.
+        if (event.ciStatus === "approved" &&
+            (previous === "rejected" || previous === "pending") &&
+            !event.isDraft &&
+            (yield (0, ciGate_1.isCurrentCommit)(event, event.headSha))) {
+            // After a red only a review or release position is protected; after a
+            // pending run the task may be parked for a changes-request or a
+            // conflict, and stays parked.
+            yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, previous === "rejected"
+                ? [SECTIONS.APPROVED, ...SECTIONS.RELEASED_SECTIONS]
+                : [
+                    SECTIONS.NEXT,
+                    SECTIONS.APPROVED,
+                    ...SECTIONS.BLOCKED_SECTIONS,
+                    ...SECTIONS.RELEASED_SECTIONS,
+                    SECTIONS.DONE,
+                ]);
+        }
     }
 });
 exports.handleCiStatus = handleCiStatus;
@@ -17258,6 +17390,7 @@ exports.handlePullRequest = void 0;
 const SECTIONS = __importStar(__nccwpck_require__(6081));
 const asana = __importStar(__nccwpck_require__(7369));
 const utils = __importStar(__nccwpck_require__(8541));
+const ciGate_1 = __nccwpck_require__(280);
 const comment_1 = __nccwpck_require__(32);
 const review_1 = __nccwpck_require__(6433);
 // No live PR to track (draft, or closed without merging) means the task is
@@ -17270,6 +17403,8 @@ const moveTasksToInProgress = (event) => __awaiter(void 0, void 0, void 0, funct
 const moveTasksToReview = (event, activeTier) => __awaiter(void 0, void 0, void 0, function* () {
     const reviewers = yield (0, review_1.reviewersToCall)(event, activeTier);
     for (const taskId of event.taskIds) {
+        if (!(yield (0, ciGate_1.ciClearsReview)(event, taskId)))
+            continue;
         yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
         yield asana.addRequestedReviews(taskId, reviewers, event.prUrl);
     }
@@ -17321,6 +17456,8 @@ const handlePullRequest = (event) => __awaiter(void 0, void 0, void 0, function*
             : [];
         const reviewers = yield (0, review_1.reviewersToCall)(event, summoned);
         for (const taskId of event.taskIds) {
+            if (!(yield (0, ciGate_1.ciClearsReview)(event, taskId)))
+                continue;
             yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
             yield asana.addRequestedReviews(taskId, reviewers, event.prUrl, activeTier);
         }
@@ -17432,6 +17569,7 @@ const SECTIONS = __importStar(__nccwpck_require__(6081));
 const asana = __importStar(__nccwpck_require__(7369));
 const utils = __importStar(__nccwpck_require__(8541));
 const format = __importStar(__nccwpck_require__(6264));
+const ciGate_1 = __nccwpck_require__(280);
 const comment_1 = __nccwpck_require__(32);
 const SUBTASK_REVIEW_STATES = ["approved", "pending", "changes_requested"];
 const DEFINITIVE_REVIEW_STATES = ["CHANGES_REQUESTED", "APPROVED", "DISMISSED"];
@@ -17727,7 +17865,7 @@ const tierVerdict = (latestReviews) => {
 // previous tier completes. `requestedReviewers` is who GitHub still waits on
 // once this approval is in.
 const handleApprovalCascade = (event, requestedReviewers) => __awaiter(void 0, void 0, void 0, function* () {
-    var _b;
+    var _b, _c;
     const githubUrl = pullRequestUrl(event);
     // A conflicting PR has a diff nobody has reviewed yet - resolving the
     // conflict writes it. So while the conflict stands the cascade neither
@@ -17739,7 +17877,17 @@ const handleApprovalCascade = (event, requestedReviewers) => __awaiter(void 0, v
     const pullRequestResponse = yield githubAxios_1.default.get(githubUrl);
     if (pullRequestResponse.data.mergeable === false)
         return [];
-    const author = (_b = pullRequestResponse.data.user) === null || _b === void 0 ? void 0 : _b.login;
+    // CI's record holds the reviews and the promotion per task, so the loops
+    // below run over the tasks it clears; when it clears none, nobody is called.
+    const taskIds = [];
+    for (const taskId of event.taskIds) {
+        if (yield (0, ciGate_1.ciClearsReview)(event, taskId, (_b = pullRequestResponse.data.head) === null || _b === void 0 ? void 0 : _b.sha)) {
+            taskIds.push(taskId);
+        }
+    }
+    if (!taskIds.length)
+        return [];
+    const author = (_c = pullRequestResponse.data.user) === null || _c === void 0 ? void 0 : _c.login;
     const reviews = yield readReviews(githubUrl);
     // Otto's stage comes first: while the PR waits on it the cascade hands no
     // tier a review and promotes nothing, like the conflict guard above.
@@ -17760,26 +17908,26 @@ const handleApprovalCascade = (event, requestedReviewers) => __awaiter(void 0, v
         const peerReviewers = requestedReviewers.filter((reviewer) => reviewer.team === "PEER_DEV");
         for (const reviewer of peerReviewers)
             followers.push(reviewer.asanaId);
-        for (const taskId of event.taskIds) {
+        for (const taskId of taskIds) {
             yield asana.addRequestedReviews(taskId, peerReviewers, event.prUrl);
         }
     }
     if (approvedByPeer && !approvedByDev) {
         for (const reviewer of devReviewers)
             followers.push(reviewer.asanaId);
-        for (const taskId of event.taskIds) {
+        for (const taskId of taskIds) {
             yield asana.addRequestedReviews(taskId, devReviewers, event.prUrl);
         }
     }
     if (approvedByPeer && approvedByDev && !approvedByQa) {
         for (const reviewer of qaReviewers)
             followers.push(reviewer.asanaId);
-        for (const taskId of event.taskIds) {
+        for (const taskId of taskIds) {
             yield asana.addRequestedReviews(taskId, qaReviewers, event.prUrl);
         }
     }
     if (fullyApproved) {
-        for (const taskId of event.taskIds) {
+        for (const taskId of taskIds) {
             yield asana.moveTaskToSection(taskId, SECTIONS.APPROVED);
         }
     }
@@ -17840,6 +17988,8 @@ const handleReview = (event) => __awaiter(void 0, void 0, void 0, function* () {
     // closes the peer stage; its dismissed changes-request was overruled.
     if (event.action === "dismissed" && !event.isDraft) {
         for (const taskId of event.taskIds) {
+            if (!(yield (0, ciGate_1.ciClearsReview)(event, taskId)))
+                continue;
             yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, SECTIONS.PROTECTED_FROM_DEMOTION);
         }
         const alreadyRequested = event.requestedReviewers.some((requested) => requested.githubName === event.username);
@@ -17912,7 +18062,7 @@ exports.handleReview = handleReview;
 // than trusting the payload: a parallel run may have moved the PR on since
 // the webhook fired.
 const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, function* () {
-    var _c, _d;
+    var _d, _e, _f;
     if (!event.taskIds.length || !event.isPullRequest)
         return;
     const githubUrl = pullRequestUrl(event);
@@ -17960,7 +18110,7 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
     // A changes-request parks the task until the author re-requests that
     // reviewer - whoever made it, since the review handler parks on any.
     const reviews = yield readReviews(githubUrl);
-    const author = (_c = pullRequest.user) === null || _c === void 0 ? void 0 : _c.login;
+    const author = (_d = pullRequest.user) === null || _d === void 0 ? void 0 : _d.login;
     const threadOpeners = yield findThreadOpeners(githubUrl, reviews, author);
     const latest = latestDefinitiveReviews(reviews, author, threadOpeners);
     const changesRequestStands = Object.keys(latest).some((login) => latest[login].state === "CHANGES_REQUESTED" &&
@@ -17985,15 +18135,14 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
         // A task a person closed is finished, whatever its pull request says.
         if ((yield asana.getTask(taskId)).completed)
             continue;
-        const ciSubtask = yield asana.getApprovalSubtask(taskId, true, otto);
-        if ((ciSubtask === null || ciSubtask === void 0 ? void 0 : ciSubtask.approval_status) === "rejected")
+        if (!(yield (0, ciGate_1.ciClearsReview)(event, taskId, (_e = pullRequest.head) === null || _e === void 0 ? void 0 : _e.sha)))
             continue;
         // A review whose run overlapped the run creating its subtask mirrored
         // its verdict onto nothing, leaving a pending approval nobody will
         // answer. GitHub's verdict wins.
         for (const subtask of yield asana.getAllApprovalSubtasks(taskId, otto)) {
             if (asana.isPendingReviewSubtask(subtask) &&
-                approvedAsanaIds.includes((_d = subtask.assignee) === null || _d === void 0 ? void 0 : _d.gid)) {
+                approvedAsanaIds.includes((_f = subtask.assignee) === null || _f === void 0 ? void 0 : _f.gid)) {
                 yield asana.updateApprovalSubtask(subtask.gid, {
                     approval_status: "approved",
                 });
@@ -18233,7 +18382,8 @@ const run = (context) => __awaiter(void 0, void 0, void 0, function* () {
         // Each handler mirrors one transition; the reconcile restates the whole
         // review state afterwards, so a PR in review carries its approvals
         // whichever event got it there. A CI rejection has just parked the task
-        // on purpose, and a description edit never touches Asana.
+        // on purpose, a pending run has only announced a commit under test, and a
+        // description edit never touches Asana.
         if (event.ciStatus === "" || event.ciStatus === "approved") {
             yield (0, review_1.reconcileReviewState)(event);
         }
