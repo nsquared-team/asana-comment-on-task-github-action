@@ -37,7 +37,8 @@ export const run = async (context: any) => {
     // Each handler mirrors one transition; the reconcile restates the whole
     // review state afterwards, so a PR in review carries its approvals
     // whichever event got it there. A CI rejection has just parked the task
-    // on purpose, and a description edit never touches Asana.
+    // on purpose, a pending run has only announced a commit under test, and a
+    // description edit never touches Asana.
     if (event.ciStatus === "" || event.ciStatus === "approved") {
       await reconcileReviewState(event);
     }

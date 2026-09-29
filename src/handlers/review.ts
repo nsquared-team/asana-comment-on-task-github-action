@@ -4,6 +4,7 @@ import * as SECTIONS from "../constants/sections";
 import * as asana from "../asana";
 import * as utils from "../utils";
 import * as format from "../format";
+import { ciClearsReview } from "../ciGate";
 import { buildFormattedBody, postCommentToTasks } from "./comment";
 import { SyncEvent } from "../event";
 
@@ -356,6 +357,18 @@ const handleApprovalCascade = async (
   const pullRequestResponse = await githubAxios.get(githubUrl);
   if (pullRequestResponse.data.mergeable === false) return [];
 
+  // CI's record holds the reviews and the promotion per task, so the loops
+  // below run over the tasks it clears; when it clears none, nobody is called.
+  const taskIds: string[] = [];
+  for (const taskId of event.taskIds) {
+    if (
+      await ciClearsReview(event, taskId, pullRequestResponse.data.head?.sha)
+    ) {
+      taskIds.push(taskId);
+    }
+  }
+  if (!taskIds.length) return [];
+
   const author = pullRequestResponse.data.user?.login;
   const reviews = await readReviews(githubUrl);
   // Otto's stage comes first: while the PR waits on it the cascade hands no
@@ -391,27 +404,27 @@ const handleApprovalCascade = async (
       (reviewer: any) => reviewer.team === "PEER_DEV"
     );
     for (const reviewer of peerReviewers) followers.push(reviewer.asanaId);
-    for (const taskId of event.taskIds) {
+    for (const taskId of taskIds) {
       await asana.addRequestedReviews(taskId, peerReviewers, event.prUrl);
     }
   }
 
   if (approvedByPeer && !approvedByDev) {
     for (const reviewer of devReviewers) followers.push(reviewer.asanaId);
-    for (const taskId of event.taskIds) {
+    for (const taskId of taskIds) {
       await asana.addRequestedReviews(taskId, devReviewers, event.prUrl);
     }
   }
 
   if (approvedByPeer && approvedByDev && !approvedByQa) {
     for (const reviewer of qaReviewers) followers.push(reviewer.asanaId);
-    for (const taskId of event.taskIds) {
+    for (const taskId of taskIds) {
       await asana.addRequestedReviews(taskId, qaReviewers, event.prUrl);
     }
   }
 
   if (fullyApproved) {
-    for (const taskId of event.taskIds) {
+    for (const taskId of taskIds) {
       await asana.moveTaskToSection(taskId, SECTIONS.APPROVED);
     }
   }
@@ -496,6 +509,7 @@ export const handleReview = async (event: SyncEvent) => {
   // closes the peer stage; its dismissed changes-request was overruled.
   if (event.action === "dismissed" && !event.isDraft) {
     for (const taskId of event.taskIds) {
+      if (!(await ciClearsReview(event, taskId))) continue;
       await asana.moveTaskToSection(
         taskId,
         SECTIONS.TESTING_REVIEW,
@@ -660,8 +674,7 @@ export const reconcileReviewState = async (event: SyncEvent) => {
   for (const taskId of event.taskIds) {
     // A task a person closed is finished, whatever its pull request says.
     if ((await asana.getTask(taskId)).completed) continue;
-    const ciSubtask = await asana.getApprovalSubtask(taskId, true, otto);
-    if (ciSubtask?.approval_status === "rejected") continue;
+    if (!(await ciClearsReview(event, taskId, pullRequest.head?.sha))) continue;
 
     // A review whose run overlapped the run creating its subtask mirrored
     // its verdict onto nothing, leaving a pending approval nobody will

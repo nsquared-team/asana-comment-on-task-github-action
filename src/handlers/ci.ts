@@ -2,14 +2,11 @@ import githubAxios from "../requests/githubAxios";
 import * as REQUESTS from "../constants/requests";
 import * as SECTIONS from "../constants/sections";
 import * as asana from "../asana";
-import * as utils from "../utils";
-import { reviewersToCall } from "./review";
+import { ciSubtaskNotes, isCurrentCommit } from "../ciGate";
 import { SyncEvent } from "../event";
 
 // CI runs fire on these pull_request actions in the consumer workflows.
 const CI_ACTIONS = ["opened", "synchronize", "reopened", "ready_for_review"];
-
-const CI_SUBTASK_NAME = "Automated CI Testing";
 
 const editPrDescription = async (event: SyncEvent) => {
   const today = new Date();
@@ -45,6 +42,17 @@ const editPrDescription = async (event: SyncEvent) => {
   await githubAxios.patch(githubUrl, { body });
 };
 
+// A red parks the task and clears the reviews asked for the commit it broke.
+// Answered reviews are completed subtasks, which the delete leaves alone.
+const parkTask = async (taskId: string) => {
+  await asana.deleteReviewSubtasks(taskId);
+  await asana.moveTaskToSection(
+    taskId,
+    SECTIONS.NEXT,
+    SECTIONS.PROTECTED_FROM_DEMOTION
+  );
+};
+
 export const handleCiStatus = async (event: SyncEvent) => {
   if (!CI_ACTIONS.includes(event.action)) return;
 
@@ -54,67 +62,61 @@ export const handleCiStatus = async (event: SyncEvent) => {
   }
 
   const otto = asana.ottoUser();
-  const taskNotes = `<a href='${event.actionUrl}'> Click Here To Investigate Action </a>`;
-  const activeTier = utils.pickReviewerTier(event.requestedReviewers);
-  // Read once, however many tasks the PR is linked to.
-  let reviewers: any[] | undefined;
+  const taskNotes = ciSubtaskNotes(event);
 
   for (const taskId of event.taskIds) {
-    // The CI verdict subtask completes itself when approved/rejected, so the
-    // latest verdict lives on the completed subtask assigned to Otto.
-    const ciSubtask = await asana.getApprovalSubtask(taskId, true, otto);
+    // The record holds CI's latest word on the task: pending while a run is
+    // testing a commit, then the verdict it reached.
+    const ciSubtask = await asana.getCiSubtask(taskId);
+    const previous = ciSubtask?.approval_status;
+
+    // The red stands until CI reports again: that report is what tells the
+    // green that follows that CI, not a person, parked the task.
+    if (event.ciStatus === "pending" && previous === "rejected") continue;
+
+    if (event.ciStatus === "rejected") await parkTask(taskId);
 
     if (ciSubtask) {
-      // CI recovered: red -> green. Only a ready PR re-enters review.
-      if (
-        ciSubtask.approval_status === "rejected" &&
-        event.ciStatus === "approved" &&
-        !event.isDraft
-      ) {
-        await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, [
-          SECTIONS.APPROVED,
-          ...SECTIONS.RELEASED_SECTIONS,
-        ]);
-        if (!reviewers) reviewers = await reviewersToCall(event, activeTier);
-        await asana.addRequestedReviews(taskId, reviewers, event.prUrl);
-      }
-
-      // CI broke: green -> red. Review requests are stale; task goes back.
-      if (
-        ciSubtask.approval_status === "approved" &&
-        event.ciStatus === "rejected"
-      ) {
-        await asana.deleteReviewSubtasks(taskId);
-        await asana.moveTaskToSection(
-          taskId,
-          SECTIONS.NEXT,
-          SECTIONS.PROTECTED_FROM_DEMOTION
-        );
-      }
-
       await asana.updateApprovalSubtask(ciSubtask.gid, {
         due_on: new Date().toISOString().substring(0, 10),
         approval_status: event.ciStatus,
         html_notes: `<body>${taskNotes}</body>`,
       });
-      continue;
-    }
-
-    // First CI verdict for this task.
-    if (event.ciStatus === "rejected") {
-      await asana.deleteReviewSubtasks(taskId);
-      await asana.moveTaskToSection(
+    } else {
+      await asana.addApprovalTask(
         taskId,
-        SECTIONS.NEXT,
-        SECTIONS.PROTECTED_FROM_DEMOTION
+        otto,
+        asana.CI_SUBTASK_NAME,
+        event.ciStatus,
+        taskNotes
       );
     }
-    await asana.addApprovalTask(
-      taskId,
-      otto,
-      CI_SUBTASK_NAME,
-      event.ciStatus,
-      taskNotes
-    );
+
+    // CI recovered, or finished the run it announced: only a ready PR whose
+    // head is the tested commit re-enters review. Reviewers are called by the
+    // re-check that follows, from GitHub's fresh list.
+    if (
+      event.ciStatus === "approved" &&
+      (previous === "rejected" || previous === "pending") &&
+      !event.isDraft &&
+      (await isCurrentCommit(event, event.headSha))
+    ) {
+      // After a red only a review or release position is protected; after a
+      // pending run the task may be parked for a changes-request or a
+      // conflict, and stays parked.
+      await asana.moveTaskToSection(
+        taskId,
+        SECTIONS.TESTING_REVIEW,
+        previous === "rejected"
+          ? [SECTIONS.APPROVED, ...SECTIONS.RELEASED_SECTIONS]
+          : [
+              SECTIONS.NEXT,
+              SECTIONS.APPROVED,
+              ...SECTIONS.BLOCKED_SECTIONS,
+              ...SECTIONS.RELEASED_SECTIONS,
+              SECTIONS.DONE,
+            ]
+      );
+    }
   }
 };
