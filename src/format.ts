@@ -1,3 +1,4 @@
+import { decodeHTMLStrict } from "entities";
 import { Lexer } from "marked";
 import type { Token, Tokens } from "marked";
 import * as utils from "./utils";
@@ -10,9 +11,12 @@ const MENTION_BASE_URL = "https://app.asana.com/0/";
 // the reader every tag in the comment. Only the renderer below writes tags,
 // only from this list, and isValidAsanaHtml checks the result before it is sent.
 //
-// h1, h2, hr, nested lists, inline tags nested in each other, and pre inside a
-// list item were each posted to a live task and kept as rich text. The docs
-// list fewer for stories; the live API is the authority.
+// Every nesting the renderer can produce was posted to a live task. Kept as
+// rich text: h1, h2, hr, nested lists, inline tags inside each other and inside
+// headings, and h1/h2/pre/lists/hr/blockquote inside a blockquote. Answered
+// with a 500 - which fails the run, so nothing posts - are a blockquote or hr
+// anywhere inside a list item and any tag inside <pre>. The docs list fewer
+// tags for stories; the live API is the authority.
 const ALLOWED_TAGS = new Set([
   "body",
   "h1",
@@ -67,38 +71,9 @@ export const escapeAttribute = (text: string): string =>
 
 // GitHub decodes the HTML entities in Markdown text when it renders. Asana does
 // not (`&#39;` was stored as six characters), so they are decoded here and
-// escaped again on the way out.
-const NAMED_ENTITIES: Record<string, string> = {
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: '"',
-  apos: "'",
-  nbsp: " ",
-  ndash: "–",
-  mdash: "—",
-  hellip: "…",
-  middot: "·",
-  rarr: "→",
-  larr: "←",
-  times: "×",
-  copy: "©",
-};
-
-const decodeEntities = (text: string): string =>
-  text.replace(
-    /&(#\d{1,7}|#x[0-9a-f]{1,6}|[a-z]+);/gi,
-    (match: string, entity: string) => {
-      if (entity.charAt(0) !== "#") return NAMED_ENTITIES[entity] ?? match;
-      const isHex = entity.charAt(1).toLowerCase() === "x";
-      const codePoint = parseInt(entity.slice(isHex ? 2 : 1), isHex ? 16 : 10);
-      const isScalar =
-        codePoint > 0 &&
-        codePoint <= 0x10ffff &&
-        (codePoint < 0xd800 || codePoint > 0xdfff);
-      return isScalar ? String.fromCodePoint(codePoint) : match;
-    }
-  );
+// escaped again on the way out. Strict: as in CommonMark, only an entity that
+// ends in `;` is one, so `?a=1&copy=2` keeps its `&copy`.
+const decodeEntities = (text: string): string => decodeHTMLStrict(text);
 
 // The shortcodes GitHub turns into emoji that our bots and people write. An
 // unknown name is left as typed.
@@ -177,7 +152,18 @@ export const userMentionHTML = (githubName?: string) => {
   return asanaMention(userObj);
 };
 
-export const isReplyComment = (body: string) => body.charAt(0) === ">";
+// A GitHub alert (`> [!NOTE]`) opens with a quote but is the comment itself.
+const ALERT = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(?:\n|$)/i;
+const ALERT_LABELS: Record<string, string> = {
+  NOTE: "ℹ️ Note",
+  TIP: "💡 Tip",
+  IMPORTANT: "❗ Important",
+  WARNING: "⚠️ Warning",
+  CAUTION: "🛑 Caution",
+};
+
+export const isReplyComment = (body: string) =>
+  body.charAt(0) === ">" && !ALERT.test(body.replace(/^>[ \t]?/, ""));
 
 type RenderContext = {
   mentionedAsanaIds: string[];
@@ -216,11 +202,12 @@ const proseHTML = (raw: string, ctx: RenderContext): string => {
 
 const plainTextOf = (tokens: Token[] = []): string =>
   tokens
-    .map((token: any) =>
-      token.tokens
+    .map((token: any) => {
+      if (token.type === "html") return "";
+      return token.tokens
         ? plainTextOf(token.tokens)
-        : decodeEntities(token.text ?? "")
-    )
+        : decodeEntities(token.text ?? "");
+    })
     .join("");
 
 const INLINE_TAG_MAP: Record<string, string> = {
@@ -239,7 +226,9 @@ const INLINE_TAG_MAP: Record<string, string> = {
   tt: "code",
 };
 
-const RAW_TAG = /^<(\/?)\s*([a-zA-Z][\w-]*)([^>]*?)\/?\s*>$/;
+// An attribute value may hold a `>`, so quoted values are read whole.
+const RAW_TAG =
+  /^<(\/?)\s*([a-zA-Z][\w-]*)((?:[^>"']|"[^"]*"|'[^']*')*?)\s*\/?\s*>$/;
 const RAW_ATTRIBUTE = /\b([a-zA-Z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
 
 const attributeOf = (attributes: string, name: string): string | undefined => {
@@ -272,8 +261,12 @@ const rawTagHTML = (
 
   if (name === "br") return "\n";
   if (name === "img") {
+    // Inside a link the image is the link's text, so it is named by its alt
+    // text; dropping it left an anchor with nothing to click.
+    if (ctx.linkDepth > 0)
+      return escapeText(attributeOf(attributes, "alt") || "Image Attachment");
     const src = attributeOf(attributes, "src");
-    return src && isWebUrl(src) && ctx.linkDepth === 0 ? imageAnchor(src) : "";
+    return src && isWebUrl(src) ? imageAnchor(src) : "";
   }
 
   const mapped = name === "a" ? "a" : INLINE_TAG_MAP[name];
@@ -299,15 +292,18 @@ const rawTagHTML = (
   return `<${mapped}>`;
 };
 
-const RAW_HTML_PIECES = /<!--[\s\S]*?(?:-->|$)|<\/?[a-zA-Z][^<>]*>/g;
-const LINE_ENDING_TAGS =
-  /^(p|div|tr|li|h[1-6]|table|ul|ol|details|blockquote)$/;
+const RAW_HTML_PIECES =
+  /<!--[\s\S]*?(?:-->|$)|<\/?[a-zA-Z](?:[^<>"']|"[^"]*"|'[^']*')*>/g;
+const LINE_ENDING_TAGS = /^(p|div|tr|h[1-6]|table|details|blockquote)$/;
 
 // An HTML block (a `<details>`, a `<picture>`, a `<p align>`, a comment
 // marker) is read as text with its tags mapped: GitHub does not render Markdown
 // inside one either.
 const rawHtmlBlockHTML = (raw: string, ctx: RenderContext): string => {
   const open: string[] = [];
+  // Raw lists become marked lines: a raw <li> could sit outside any list, and
+  // Asana's <li> outside one, or a block inside one, is refused.
+  const lists: { ordered: boolean; count: number }[] = [];
   let html = "";
   let last = 0;
   for (const match of raw.matchAll(RAW_HTML_PIECES)) {
@@ -322,6 +318,16 @@ const rawHtmlBlockHTML = (raw: string, ctx: RenderContext): string => {
       html += isClosing
         ? `${rawTagHTML("</strong>", open, ctx)}\n`
         : rawTagHTML("<strong>", open, ctx);
+    } else if (name === "ul" || name === "ol") {
+      if (isClosing) lists.pop();
+      else lists.push({ ordered: name === "ol", count: 0 });
+      html += "\n";
+    } else if (name === "li") {
+      const list = lists[lists.length - 1];
+      if (!isClosing) {
+        const marker = list?.ordered ? `${++list.count}. ` : "• ";
+        html += `\n${"  ".repeat(Math.max(lists.length - 1, 0))}${marker}`;
+      }
     } else if (LINE_ENDING_TAGS.test(name)) {
       if (isClosing) html += "\n";
     } else if (name === "td" || name === "th") {
@@ -334,19 +340,23 @@ const rawHtmlBlockHTML = (raw: string, ctx: RenderContext): string => {
   while (open.length) html += closeTag(open.pop() as string, ctx);
   return html
     .replace(/ · (\n|$)/g, (_match: string, end: string) => end)
+    .replace(/[ \t]*\n[ \t]*\n(?=[ \t]*(?:• |\d+\. ))/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 };
 
 const linkHTML = (token: Tokens.Link, ctx: RenderContext): string => {
   const label = plainTextOf(token.tokens);
-  if (!isWebUrl(token.href) || ctx.linkDepth > 0) return proseHTML(label, ctx);
+  // The lexer leaves entities in a destination as typed; escapeAttribute
+  // escapes once, so they are decoded first.
+  const href = decodeEntities(token.href);
+  if (!isWebUrl(href) || ctx.linkDepth > 0) return proseHTML(label, ctx);
   // A markdown link keeps its own text; a bare url is named after its site
   // and loses a trailing slash, as it always has.
   if (token.raw.startsWith("[")) {
-    return anchor(token.href, label || `${siteName(token.href)} Link`);
+    return anchor(href, label || `${siteName(href)} Link`);
   }
-  return anchor(token.href.replace(/\/$/, ""), `${siteName(token.href)} Link`);
+  return anchor(href.replace(/\/$/, ""), `${siteName(href)} Link`);
 };
 
 const inlineHTML = (tokens: Token[] = [], ctx: RenderContext): string => {
@@ -380,12 +390,14 @@ const inlineHTML = (tokens: Token[] = [], ctx: RenderContext): string => {
       case "link":
         html += linkHTML(token, ctx);
         break;
-      case "image":
+      case "image": {
+        const src = decodeEntities(token.href);
         html +=
-          isWebUrl(token.href) && ctx.linkDepth === 0
-            ? imageAnchor(token.href)
-            : proseHTML(token.text, ctx);
+          isWebUrl(src) && ctx.linkDepth === 0
+            ? imageAnchor(src)
+            : proseHTML(token.text || "Image Attachment", ctx);
         break;
+      }
       case "html":
         html += rawTagHTML(token.text, open, ctx);
         break;
@@ -404,18 +416,38 @@ const isBlockHTML = (html: string) =>
 
 // Block elements carry their own spacing in Asana, so only two runs of text
 // next to each other need the blank line that separates paragraphs.
+const separatorBetween = (previous: string, next: string) =>
+  isBlockHTML(previous) || isBlockHTML(next) ? "" : "\n\n";
+
 const joinBlocks = (blocks: string[]): string =>
-  blocks.reduce((html, block, index) => {
-    if (index === 0) return block;
-    const previous = blocks[index - 1];
-    const separator = isBlockHTML(previous) || isBlockHTML(block) ? "" : "\n\n";
-    return html + separator + block;
-  }, "");
+  blocks.reduce(
+    (html, block, index) =>
+      index === 0
+        ? block
+        : html + separatorBetween(blocks[index - 1], block) + block,
+    ""
+  );
+
+// A rendered block. A list, a table or a code block also keeps its parts, so a
+// comment over Asana's size limit can be cut between two of them instead of
+// losing the whole block.
+type Block = { html: string; open?: string; parts?: string[]; close?: string };
+
+const splittable = (open: string, parts: string[], close: string): Block => ({
+  html: `${open}${parts.join("")}${close}`,
+  open,
+  parts,
+  close,
+});
 
 // A story has no table tag: each row becomes one bullet that names its first
 // cell and labels the rest with their column headers.
-const tableHTML = (token: Tokens.Table, ctx: RenderContext): string => {
+const tableBlock = (token: Tokens.Table, ctx: RenderContext): Block => {
   const headers = token.header.map((cell) => plainTextOf(cell.tokens).trim());
+  if (!token.rows.length) {
+    const line = headers.filter(Boolean).map(escapeText).join(" · ");
+    return { html: line ? `<ul><li><strong>${line}</strong></li></ul>` : "" };
+  }
   const rows = token.rows.map((row) => {
     const [first, ...rest] = row.map((cell) =>
       inlineHTML(cell.tokens, ctx).trim()
@@ -430,69 +462,115 @@ const tableHTML = (token: Tokens.Table, ctx: RenderContext): string => {
     const line = [head, labelled.join(" · ")].filter(Boolean).join(" — ");
     return `<li>${line}</li>`;
   });
-  return rows.length ? `<ul>${rows.join("")}</ul>` : "";
+  return splittable("<ul>", rows, "</ul>");
 };
 
-const listItemHTML = (item: Tokens.ListItem, ctx: RenderContext): string => {
+const listItemHTML = (
+  item: Tokens.ListItem,
+  number: number | null,
+  ctx: RenderContext
+): string => {
   ctx.listDepth++;
   const parts = blocksHTML(item.tokens, ctx);
   ctx.listDepth--;
   const marker = item.task ? (item.checked ? "☑ " : "☐ ") : "";
-  return `<li>${marker}${joinBlocks(parts)}</li>`;
+  const numbered = number === null ? "" : `${number}. `;
+  return `<li>${numbered}${marker}${joinBlocks(parts)}</li>`;
 };
 
-const blockHTML = (token: any, ctx: RenderContext): string => {
+// Asana's <ol> has no start attribute, so a list that does not count from 1 -
+// the second half of one a paragraph or code block split - writes its own
+// numbers rather than restarting at 1.
+const listBlock = (token: Tokens.List, ctx: RenderContext): Block => {
+  const start = typeof token.start === "number" ? token.start : 1;
+  const ownNumbers = token.ordered && start !== 1;
+  const tag = token.ordered && !ownNumbers ? "ol" : "ul";
+  const items = token.items.map((item, index) =>
+    listItemHTML(item, ownNumbers ? start + index : null, ctx)
+  );
+  return splittable(`<${tag}>`, items, `</${tag}>`);
+};
+
+const codeBlock = (text: string): Block => {
+  const lines = text.split("\n");
+  return splittable(
+    "<pre>",
+    lines.map((line, index) =>
+      escapeText(index < lines.length - 1 ? `${line}\n` : line)
+    ),
+    "</pre>"
+  );
+};
+
+const blockquoteHTML = (token: Tokens.Blockquote, ctx: RenderContext) => {
+  const tokens = [...token.tokens] as any[];
+  let label = "";
+  const alert = tokens[0]?.type === "paragraph" && tokens[0].text.match(ALERT);
+  if (alert) {
+    label = `<strong>${ALERT_LABELS[alert[1].toUpperCase()]}</strong>`;
+    const rest = tokens[0].text.slice(alert[0].length);
+    tokens[0] = { ...tokens[0], tokens: Lexer.lexInline(rest) };
+  }
+  const inner = joinBlocks([label, ...blocksHTML(tokens, ctx)].filter(Boolean));
+  // Asana answers a quote inside a list item with a 500, so there it is the
+  // item's own text.
+  return ctx.listDepth > 0 ? inner : `<blockquote>${inner}</blockquote>`;
+};
+
+const renderBlock = (token: any, ctx: RenderContext): Block => {
   switch (token.type) {
     case "heading": {
       const inner = inlineHTML(token.tokens, ctx);
-      // Asana's comments have h1 and h2 only, and no heading inside a list.
-      if (ctx.listDepth === 0 && token.depth === 1) return `<h1>${inner}</h1>`;
-      if (ctx.listDepth === 0 && token.depth === 2) return `<h2>${inner}</h2>`;
-      return `<strong>${inner}</strong>`;
+      // Asana's comments have h1 and h2 only; inside a list a heading is the
+      // item's bold line.
+      if (ctx.listDepth === 0 && token.depth === 1)
+        return { html: `<h1>${inner}</h1>` };
+      if (ctx.listDepth === 0 && token.depth === 2)
+        return { html: `<h2>${inner}</h2>` };
+      return { html: `<strong>${inner}</strong>` };
     }
     case "paragraph":
-      return inlineHTML(token.tokens, ctx);
+      return { html: inlineHTML(token.tokens, ctx) };
     case "text":
-      return token.tokens
-        ? inlineHTML(token.tokens, ctx)
-        : proseHTML(token.text, ctx);
+      return {
+        html: token.tokens
+          ? inlineHTML(token.tokens, ctx)
+          : proseHTML(token.text, ctx),
+      };
     case "code":
-      return `<pre>${escapeText(token.text)}</pre>`;
+      return codeBlock(token.text);
     case "blockquote":
-      return `<blockquote>${joinBlocks(
-        blocksHTML(token.tokens, ctx)
-      )}</blockquote>`;
-    case "list": {
-      const tag = token.ordered ? "ol" : "ul";
-      const items = token.items.map((item: Tokens.ListItem) =>
-        listItemHTML(item, ctx)
-      );
-      return `<${tag}>${items.join("")}</${tag}>`;
-    }
+      return { html: blockquoteHTML(token, ctx) };
+    case "list":
+      return listBlock(token, ctx);
     case "table":
-      return tableHTML(token, ctx);
+      return tableBlock(token, ctx);
     case "hr":
-      return "<hr/>";
+      // A rule inside a list item is answered with a 500 as well.
+      return { html: ctx.listDepth > 0 ? "———" : "<hr/>" };
     case "html":
       return token.pre
-        ? `<pre>${escapeText(
-            decodeEntities(token.text.replace(RAW_HTML_PIECES, ""))
-          )}</pre>`
-        : rawHtmlBlockHTML(token.text, ctx);
+        ? codeBlock(decodeEntities(token.text.replace(RAW_HTML_PIECES, "")))
+        : { html: rawHtmlBlockHTML(token.text, ctx) };
     case "space":
     case "def":
-      return "";
+      return { html: "" };
     default:
-      return proseHTML(token.raw ?? token.text ?? "", ctx);
+      return { html: proseHTML(token.raw ?? token.text ?? "", ctx) };
   }
 };
 
+const renderBlocks = (tokens: Token[] = [], ctx: RenderContext): Block[] =>
+  tokens
+    .map((token) => renderBlock(token, ctx))
+    .filter((block) => block.html !== "");
+
 const blocksHTML = (tokens: Token[] = [], ctx: RenderContext): string[] =>
-  tokens.map((token) => blockHTML(token, ctx)).filter((html) => html !== "");
+  renderBlocks(tokens, ctx).map((block) => block.html);
 
 // Only what this file writes can get past here: tags from ALLOWED_TAGS, an
-// href (the one attribute) on <a> alone, balanced and properly nested, every
-// `&` starting an entity, and no character XML forbids.
+// href (the one attribute) on <a> alone, balanced and nested the way the live
+// API accepts, every `&` starting an entity, and no character XML forbids.
 export const isValidAsanaHtml = (html: string): boolean => {
   if (withoutXmlForbidden(html) !== html) return false;
   if (/&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-f]+);)/i.test(html))
@@ -507,6 +585,7 @@ export const isValidAsanaHtml = (html: string): boolean => {
     if (attributes && name !== "a") return false;
     if (name === "hr") {
       if (!selfClosing || closing) return false;
+      if (stack.includes("li") || stack.includes("pre")) return false;
       continue;
     }
     if (selfClosing) return false;
@@ -515,8 +594,10 @@ export const isValidAsanaHtml = (html: string): boolean => {
       continue;
     }
     const parent = stack[stack.length - 1];
+    if (stack.includes("pre")) return false;
     if (name === "a" && (!attributes || stack.includes("a"))) return false;
     if (name === "li" && parent !== "ul" && parent !== "ol") return false;
+    if (name === "blockquote" && stack.includes("li")) return false;
     stack.push(name);
   }
   return stack.length === 0;
@@ -535,19 +616,52 @@ const plainHTML = (raw: string): string => {
   return `${escapeText(text)}\n\n${TRUNCATED_NOTE}`;
 };
 
-// Whole top-level blocks are kept until the next would cross the budget, so
-// the cut never lands inside a tag.
-const fitToBudget = (blocks: string[]): string | null => {
-  const whole = joinBlocks(blocks);
+// Top-level blocks are kept until the next would cross the budget, and that
+// one is cut between its items, rows or lines when it has them - so the cut
+// never lands inside a tag and one long list does not take the rest with it.
+const fitToBudget = (blocks: Block[]): string | null => {
+  const whole = joinBlocks(blocks.map((block) => block.html));
   if (byteLength(whole) <= BODY_BYTE_BUDGET) return whole;
+
   const kept: string[] = [];
+  let used = 0;
+  const cost = (html: string) =>
+    byteLength(
+      (kept.length ? separatorBetween(kept[kept.length - 1], html) : "") + html
+    );
   for (const block of blocks) {
-    if (byteLength(joinBlocks([...kept, block])) > TRUNCATED_ROOM) break;
-    kept.push(block);
+    if (used + cost(block.html) <= TRUNCATED_ROOM) {
+      used += cost(block.html);
+      kept.push(block.html);
+      continue;
+    }
+    if (block.parts && block.open && block.close) {
+      const parts: string[] = [];
+      let partsBytes = byteLength(block.open + block.close);
+      for (const part of block.parts) {
+        if (used + partsBytes + byteLength(part) + 2 > TRUNCATED_ROOM) break;
+        partsBytes += byteLength(part);
+        parts.push(part);
+      }
+      if (parts.length)
+        kept.push(`${block.open}${parts.join("")}${block.close}`);
+    }
+    break;
   }
   if (!kept.length) return null;
   return `${joinBlocks(kept)}\n\n${TRUNCATED_NOTE}`;
 };
+
+// An anchor left with no text - a raw <a> around something that renders to
+// nothing - is named after its site, as a bare url is.
+const withNamedEmptyLinks = (html: string): string =>
+  html.replace(
+    /<a href="([^"]*)">\s*<\/a>/g,
+    (_match: string, href: string) =>
+      `<a href="${href}"> 🔗 ${escapeText(
+        `${siteName(decodeEntities(href))} Link`
+      )} 🔗 </a>`
+  );
 
 const withoutLeadingQuote = (raw: string): string => {
   const lines = raw.split("\n");
@@ -573,12 +687,17 @@ export const markdownToAsana = (
   // The quote is cut from the text, not from the parsed tokens: Markdown reads
   // a reply typed on the line under the quote as part of the quote.
   const source = options.isReply ? withoutLeadingQuote(raw) : raw;
-  const body = fitToBudget(blocksHTML(Lexer.lex(source, { gfm: true }), ctx));
+  const fitted = fitToBudget(
+    renderBlocks(Lexer.lex(source, { gfm: true }), ctx)
+  );
+  const body = fitted === null ? null : withNamedEmptyLinks(fitted);
   if (body !== null && isValidAsanaHtml(body)) {
     return { body, mentionedAsanaIds: ctx.mentionedAsanaIds };
   }
   console.warn(
     "Comment could not be rendered as Asana rich text; posting it as plain text"
   );
-  return { body: plainHTML(source), mentionedAsanaIds: [] };
+  // The mentions were found while rendering; the people they name still
+  // follow the task when the comment itself goes out as plain text.
+  return { body: plainHTML(source), mentionedAsanaIds: ctx.mentionedAsanaIds };
 };

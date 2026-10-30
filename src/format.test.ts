@@ -335,3 +335,143 @@ describe("userMentionHTML", () => {
     expect(format.userMentionHTML("a<b>")).toEqual("@a&lt;b&gt;");
   });
 });
+
+describe("review findings", () => {
+  test("an image inside a raw link is the link's text, not an empty anchor", () => {
+    // Blacksmith's "Fix with smith" button is <a><picture><img alt></picture></a>;
+    // dropping the img left <a href></a>, which shows nothing.
+    expect(
+      render(
+        '<a href="https://x.com"><img alt="Fix with smith" src="https://x.com/a.png"></a>'
+      )
+    ).toEqual('<a href="https://x.com">Fix with smith</a>');
+    expect(
+      render('<a href="https://x.com"><img src="https://x.com/a.png"></a>')
+    ).toEqual('<a href="https://x.com">Image Attachment</a>');
+  });
+
+  test("a raw link that renders to nothing is named after its site", () => {
+    expect(
+      render('see <a href="https://x.com/y"><span></span></a> here')
+    ).toEqual(`see ${anchor("https://x.com/y", "X Link")} here`);
+  });
+
+  test("a > inside a quoted attribute does not break the tag", () => {
+    expect(
+      render('see <a title="x > y" href="https://x.com">t</a> ok')
+    ).toEqual('see <a href="https://x.com">t</a> ok');
+    expect(render('<img alt="a > b" src="https://a.com/i.png">')).toEqual(
+      anchor("https://a.com/i.png", "Image Attachment")
+    );
+  });
+
+  test("raw html inside a markdown link's label is dropped, not shown as tags", () => {
+    expect(render("[<kbd>Esc</kbd> key](https://x.com)")).toEqual(
+      anchor("https://x.com", "Esc key")
+    );
+  });
+
+  test("an entity in a link's destination is escaped once", () => {
+    expect(render("[x](https://a.com/?a=1&amp;b=2)")).toEqual(
+      anchor("https://a.com/?a=1&amp;b=2", "x")
+    );
+  });
+
+  test("a numbered list split by a paragraph keeps counting", () => {
+    expect(render("1. one\n\nwhy\n\n2. two\n3. three")).toEqual(
+      "<ol><li>one</li></ol>why<ul><li>2. two</li><li>3. three</li></ul>"
+    );
+  });
+
+  test("every named HTML entity is decoded, and one without a semicolon is text", () => {
+    expect(
+      render("It&rsquo;s &ldquo;done&rdquo; &bull; &check; a=1&copy=2")
+    ).toEqual("It’s “done” • ✓ a=1&amp;copy=2");
+  });
+
+  test("a GitHub alert renders as a labelled quote, and is not mistaken for a reply", () => {
+    const body = "> [!CAUTION]\n> Do not merge until the migration has run.";
+    expect(format.isReplyComment(body)).toBe(false);
+    expect(render(body)).toEqual(
+      "<blockquote><strong>🛑 Caution</strong>\n\nDo not merge until the migration has run.</blockquote>"
+    );
+  });
+
+  test("raw ul, ol and li keep their bullets and numbers", () => {
+    expect(render("<ol>\n<li>first</li>\n<li>second</li>\n</ol>")).toEqual(
+      "1. first\n2. second"
+    );
+    expect(render("<ul><li>a</li><li>b</li></ul>")).toEqual("• a\n• b");
+  });
+
+  test("a table with headers and no rows keeps its headers", () => {
+    expect(render("| Column A | Column B |\n|---|---|")).toEqual(
+      "<ul><li><strong>Column A · Column B</strong></li></ul>"
+    );
+  });
+
+  test("a quote or a rule inside a list item, which Asana answers with a 500, becomes the item's text", () => {
+    const out = render("- a\n\n  > quoted\n\n  ***\n\n  b");
+    expect(out).toEqual("<ul><li>a\n\nquoted\n\n———\n\nb</li></ul>");
+    expect(format.isValidAsanaHtml(`<body>${out}</body>`)).toBe(true);
+  });
+
+  test("the validator refuses each nesting the live API answered with a 500", () => {
+    expect(
+      format.isValidAsanaHtml(
+        "<body><ul><li><blockquote>q</blockquote></li></ul></body>"
+      )
+    ).toBe(false);
+    expect(
+      format.isValidAsanaHtml("<body><ul><li>a<hr/></li></ul></body>")
+    ).toBe(false);
+    expect(
+      format.isValidAsanaHtml("<body><pre><code>c</code></pre></body>")
+    ).toBe(false);
+  });
+
+  test("one list bigger than the budget is cut between its items, keeping the rest of the comment's start", () => {
+    const items = Array.from(
+      { length: 1500 },
+      (_, i) => `- **item ${i}** with some text here`
+    );
+    const body = render(`intro\n\n${items.join("\n")}\n\nconclusion`);
+    expect(Buffer.byteLength(body)).toBeLessThanOrEqual(
+      format.BODY_BYTE_BUDGET
+    );
+    expect(body.startsWith("intro<ul><li><strong>item 0</strong>")).toBe(true);
+    expect((body.match(/<li>/g) || []).length).toBeGreaterThan(1000);
+    expect(body).toContain("The full text is on GitHub.");
+    expect(format.isValidAsanaHtml(`<body>${body}</body>`)).toBe(true);
+  });
+
+  test("a table bigger than the budget is cut between rows instead of falling back to raw markdown", () => {
+    const rows = Array.from(
+      { length: 2000 },
+      (_, i) => `| src/file${i}.ts | 9${i % 10}% |`
+    );
+    const body = render(`| file | cov |\n|---|---|\n${rows.join("\n")}`);
+    expect(
+      body.startsWith("<ul><li><strong>src/file0.ts</strong> — cov: 90%</li>")
+    ).toBe(true);
+    expect(body).not.toContain("|---|");
+    expect(format.isValidAsanaHtml(`<body>${body}</body>`)).toBe(true);
+  });
+
+  test("a comment of many short paragraphs over the budget is cut quickly", () => {
+    const started = Date.now();
+    const body = render("a\n\n".repeat(21845));
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(Buffer.byteLength(body)).toBeLessThanOrEqual(
+      format.BODY_BYTE_BUDGET
+    );
+  });
+
+  test("the people a comment mentions still follow the task when it is posted as plain text", () => {
+    const { body, mentionedAsanaIds } = format.markdownToAsana(
+      `\`\`\`\n${"x".repeat(70000)}\n\`\`\`\n\n@MariamElZaatari see above`
+    );
+    expect(mentionedAsanaIds).toHaveLength(1);
+    expect(format.isValidAsanaHtml(`<body>${body}</body>`)).toBe(true);
+  });
+});

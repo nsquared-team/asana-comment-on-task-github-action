@@ -29,6 +29,7 @@
     "@actions/github": "^5.0.0",
     "axios": "^1.12.2",
     "axios-retry": "^4.5.0",
+    "entities": "4.5.0",
     "marked": "15.0.12"
   },
   "devDependencies": {
