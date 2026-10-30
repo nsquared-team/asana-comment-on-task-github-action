@@ -71,6 +71,12 @@ The name is restated each time the reviews change — whenever one is added or a
 
 Only those two names are ever touched. The "Automated CI Testing" subtask is never renamed, and neither is a subtask a merge has already relabelled "FYI Review …" — nobody is waiting on that one. A merge relabels a "Blocking Review" to its FYI name like any other open review.
 
+## How comments are formatted in Asana
+
+Every PR comment and review is converted from GitHub Markdown to the rich text an Asana comment accepts (`src/format.ts`): headings, bold, italic, strikethrough, code, code blocks, lists, quotes, rules and links keep their formatting. Headings below `##` become bold lines, a table becomes one bullet per row, `<details>` is unwrapped, HTML comment markers are dropped, and GitHub's emoji shortcodes and alerts are rendered. Text is escaped, so a `<`, `>` or `&` in a comment arrives as that character.
+
+Asana does not reject a comment for a tag it does not accept: it shows the whole comment as raw HTML. A few nestings (a quote or rule inside a list item, any tag inside a code block) are answered with a 500 instead. So every body is checked against the tags and nestings the live API was shown to accept before it is sent, and one that fails is posted as plain text. A comment over Asana's 65,400-byte limit is cut between blocks, list items or table rows, with a note that the full text is on GitHub.
+
 ## Invocation modes
 
 The same action runs in two modes, switched by `comment-text`:
