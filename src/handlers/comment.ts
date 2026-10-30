@@ -54,32 +54,22 @@ export const postCommentToTasks = async (
   setOutput("comment", commentText);
 };
 
-export const buildFormattedBody = (event: SyncEvent) => {
-  let mentionedAsanaIds: string[] = [];
-  const body = format.linkifyBody(
-    format.stripQuotesAndArrows(event.rawCommentBody),
-    // Runs while the anchors are still placeholders, so a handle that happens to
-    // appear inside a url cannot be linked inside that url's href - which
-    // produced html_text Asana rejects, and left the real mention as plain text.
-    (text) => {
-      const mentions = format.replaceMentions(text);
-      mentionedAsanaIds = mentions.mentionedAsanaIds;
-      return mentions.body;
-    }
-  );
-  return { body, mentionedAsanaIds };
-};
+export const buildFormattedBody = (event: SyncEvent) =>
+  format.markdownToAsana(event.rawCommentBody, {
+    isReply: format.isReplyComment(event.rawCommentBody),
+  });
 
 export const handleComment = async (event: SyncEvent) => {
   const { body, mentionedAsanaIds } = buildFormattedBody(event);
   const isReply = format.isReplyComment(event.rawCommentBody);
   const userHTML = format.userMentionHTML(event.username);
 
-  // Otto's conflict alert bounces the task out of review.
+  // Otto's conflict alert bounces the task out of review. Read from the raw
+  // text, so how the alert happens to be formatted can never hide it.
   const isMergeConflictAlert =
     event.eventName === "issue_comment" &&
     event.username === "otto-bot-git" &&
-    body.includes("This pull request has conflicts");
+    event.rawCommentBody.includes("This pull request has conflicts");
 
   if (isMergeConflictAlert) {
     for (const taskId of event.taskIds) {
@@ -104,15 +94,16 @@ export const handleComment = async (event: SyncEvent) => {
     await asana.addFollowers(taskId, followers);
   }
 
+  const commentUrl = format.escapeAttribute(event.commentUrl);
   let commentText = "";
   if (event.eventName === "issue_comment") {
     if (isReply) {
-      commentText = `<body> ${userHTML} <a href="${event.commentUrl}">replied</a>:\n\n${body} </body>`;
+      commentText = `<body> ${userHTML} <a href="${commentUrl}">replied</a>:\n\n${body} </body>`;
     } else {
       commentText =
         event.username === "otto-bot-git"
-          ? `<body> ${body}\n<a href="${event.commentUrl}">Comment URL</a> </body>`
-          : `<body> ${userHTML} <a href="${event.commentUrl}">commented</a>:\n\n${body} </body>`;
+          ? `<body> ${body}\n<a href="${commentUrl}">Comment URL</a> </body>`
+          : `<body> ${userHTML} <a href="${commentUrl}">commented</a>:\n\n${body} </body>`;
     }
   } else {
     // pull_request_review_comment: inline code comment with file context.
@@ -121,16 +112,16 @@ export const handleComment = async (event: SyncEvent) => {
     // the subject type decides - a line number alone cannot tell a file-level
     // comment apart from one genuinely on the first line.
     const files = event.commentPath.split("/");
-    const fileName = files[files.length - 1];
+    const fileName = format.escapeText(files[files.length - 1]);
     const isFileLevel = event.commentSubjectType === "file";
     const location =
       !isFileLevel && event.commentLine
         ? `${fileName} (Line ${event.commentLine})`
         : fileName;
 
-    commentText = `<body> ${userHTML} is requesting the following <a href="${event.commentUrl}">changes</a> on ${location}:\n\n${body} </body>`;
+    commentText = `<body> ${userHTML} is requesting the following <a href="${commentUrl}">changes</a> on ${location}:\n\n${body} </body>`;
     if (event.commentInReplyTo) {
-      commentText = `<body> ${userHTML} <a href="${event.commentUrl}">replied</a> on ${location}:\n\n${body} </body>`;
+      commentText = `<body> ${userHTML} <a href="${commentUrl}">replied</a> on ${location}:\n\n${body} </body>`;
     }
   }
 

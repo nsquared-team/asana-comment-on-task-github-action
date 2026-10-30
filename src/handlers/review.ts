@@ -541,6 +541,7 @@ export const handleReview = async (event: SyncEvent) => {
 
   // Mirror the review itself as a comment.
   const userHTML = format.userMentionHTML(event.username);
+  const commentUrl = format.escapeAttribute(event.commentUrl);
   let commentText = "";
   switch (event.reviewState) {
     case "commented":
@@ -548,17 +549,17 @@ export const handleReview = async (event: SyncEvent) => {
       // An edited review still posts: postCommentToTasks matches the story by
       // review URL and updates it in place.
       if (!body) return;
-      commentText = `<body> ${userHTML} is requesting the following <a href="${event.commentUrl}">changes</a>:\n\n${body} </body>`;
+      commentText = `<body> ${userHTML} is requesting the following <a href="${commentUrl}">changes</a>:\n\n${body} </body>`;
       if (event.reviewState === "commented") {
-        commentText = `<body> ${userHTML} <a href="${event.commentUrl}">commented</a>:\n\n${body} </body>`;
+        commentText = `<body> ${userHTML} <a href="${commentUrl}">commented</a>:\n\n${body} </body>`;
       }
       break;
     case "approved":
       if (!body) return;
-      commentText = `<body> ${userHTML} approved with the following <a href="${event.commentUrl}">comment</a>:\n\n${body} </body>`;
+      commentText = `<body> ${userHTML} approved with the following <a href="${commentUrl}">comment</a>:\n\n${body} </body>`;
       break;
     default:
-      commentText = `<body> <a href="${event.commentUrl}">PR #${event.prNumber}</a> is ${event.reviewState} by ${userHTML} </body>`;
+      commentText = `<body> <a href="${commentUrl}">PR #${event.prNumber}</a> is ${event.reviewState} by ${userHTML} </body>`;
       break;
   }
 

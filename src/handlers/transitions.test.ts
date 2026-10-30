@@ -6,6 +6,7 @@ import { handleReview, reconcileReviewState } from "./review";
 import { handleComment } from "./comment";
 import { run as runSync } from "../run";
 import { SyncEvent } from "../event";
+import { isValidAsanaHtml } from "../format";
 import * as INPUTS from "../constants/inputs";
 import { getInput, setFailed } from "@actions/core";
 
@@ -3135,5 +3136,95 @@ describe("otto is the stage before the peers", () => {
       baseEvent({ action: "opened", taskIds: [], requestedReviewers: [PEER] })
     );
     expect(githubGet).not.toHaveBeenCalled();
+  });
+});
+
+describe("every mirrored comment is html Asana keeps as rich text", () => {
+  // Asana stores a body with one tag it does not accept as literal text, so
+  // the reader sees every tag. The wrapper the handlers add is part of what
+  // Asana checks, so it is checked here with the converted body inside it.
+  const MARKDOWN =
+    "<!-- marker -->\n## Heading\n\n**bold** `a->b` R&D\n\n| a | b |\n|---|---|\n| 1 | 2 |";
+  const URL_WITH_QUERY = "https://github.com/o/r/pull/1?a=1&b=2#issuecomment-1";
+
+  const postedHtml = () =>
+    [...asanaPost.mock.calls, ...asanaPut.mock.calls]
+      .filter(([url]: [string]) => url.includes("/stories"))
+      .map(([, payload]: [string, any]) => payload.data.html_text as string);
+
+  test.each([
+    ["a person's comment", { username: "MariamElZaatari" }],
+    ["otto's comment", { username: "otto-bot-git" }],
+    ["a quote reply", { rawCommentBody: `> earlier\n\n${MARKDOWN}` }],
+    [
+      "a comment on a file's line",
+      {
+        eventName: "pull_request_review_comment",
+        commentPath: "app/<odd>&name.php",
+        commentLine: 3,
+      },
+    ],
+  ])("%s", async (_name: string, overrides: Partial<SyncEvent>) => {
+    mockAsana();
+    await handleComment(
+      baseEvent({
+        eventName: "issue_comment",
+        action: "created",
+        rawCommentBody: MARKDOWN,
+        commentUrl: URL_WITH_QUERY,
+        ...overrides,
+      })
+    );
+    const [html] = postedHtml();
+    expect(isValidAsanaHtml(html)).toBe(true);
+    expect(html).toContain(
+      'href="https://github.com/o/r/pull/1?a=1&amp;b=2#issuecomment-1"'
+    );
+    expect(html).not.toContain("!--");
+    expect(html).not.toContain("**");
+  });
+
+  test("a review", async () => {
+    mockAsana();
+    await handleReview(
+      baseEvent({
+        eventName: "pull_request_review",
+        action: "submitted",
+        reviewState: "commented",
+        username: "otto-bot-git",
+        rawCommentBody: MARKDOWN,
+        commentUrl: URL_WITH_QUERY,
+      })
+    );
+    const [html] = postedHtml();
+    expect(isValidAsanaHtml(html)).toBe(true);
+    expect(html).toContain("<h2>Heading</h2>");
+  });
+
+  test("an edited comment still updates the story it posted, and the new text is converted", async () => {
+    // Stories are matched by the comment url in their plain text, where Asana
+    // writes each anchor as its href.
+    mockAsana({
+      stories: [
+        {
+          gid: "story-1",
+          resource_subtype: "comment_added",
+          created_by: { gid: OTTO_ASANA_ID },
+          text: `## Heading **bold** https://github.com/o/r/pull/1#issuecomment-1`,
+        },
+      ],
+    });
+    await handleComment(
+      baseEvent({
+        eventName: "issue_comment",
+        action: "edited",
+        rawCommentBody: MARKDOWN,
+        commentUrl: "https://github.com/o/r/pull/1#issuecomment-1",
+      })
+    );
+    expect(asanaPut).toHaveBeenCalledWith("/stories/story-1", {
+      data: { html_text: expect.stringContaining("<h2>Heading</h2>") },
+    });
+    expect(isValidAsanaHtml(postedHtml()[0])).toBe(true);
   });
 });

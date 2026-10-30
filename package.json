@@ -28,7 +28,8 @@
     "@actions/core": "^1.11.1",
     "@actions/github": "^5.0.0",
     "axios": "^1.12.2",
-    "axios-retry": "^4.5.0"
+    "axios-retry": "^4.5.0",
+    "marked": "15.0.12"
   },
   "devDependencies": {
     "@types/jest": "^27.0.1",
