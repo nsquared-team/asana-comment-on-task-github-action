@@ -17,6 +17,6 @@ Risk: every repo running the sync takes this on its next version bump. Only revi
 - [ ] A reviewer who already holds an approval subtask on the task, in any state, gets no second one.
 - [ ] A late approval never moves a merged pull request's task to Approved.
 - [ ] On an open pull request the cascade creates the same subtasks under the same names and promotes as before.
-- [ ] The README's approval row says what an approval after the merge does.
+- [ ] The README's approval row says what an approval does on a pull request that has already merged.
 - [ ] The new tests fail when the merged check is removed.
 - [ ] Every place the cascade hands out a review takes the FYI path on a merged pull request, shown by the search over its call sites.
