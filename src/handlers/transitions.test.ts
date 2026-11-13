@@ -1323,6 +1323,108 @@ describe("a merge conflict pauses the cascade", () => {
   });
 });
 
+describe("a review that lands after the merge", () => {
+  const DEV = { githubName: "some-dev", asanaId: "dev-asana-id", team: "DEV" };
+
+  // The merged PR this was found on came back with `mergeable: null`, which
+  // the conflict guard lets through, so `merged` is all that sets it apart.
+  const mockGithub = (merged: boolean, reviews: any[]) =>
+    githubGet.mockImplementation((url: string) =>
+      Promise.resolve({
+        data: url.includes("/reviews")
+          ? reviews
+          : { mergeable: null, merged, base: { ref: "feature-root" } },
+      })
+    );
+
+  const approvalBy = (githubName: string, requestedReviewers: any[] = []) =>
+    baseEvent({
+      eventName: "pull_request_review",
+      action: "submitted",
+      reviewState: "approved",
+      username: githubName,
+      commentUrl: "https://github.com/r/pull/42#review-after-merge",
+      requestedReviewers,
+    });
+
+  const approvedBy = (githubName: string) => [
+    {
+      user: { login: githubName },
+      state: "APPROVED",
+      submitted_at: "2026-11-11T15:36:33Z",
+    },
+  ];
+
+  const subtaskCreates = () =>
+    asanaPost.mock.calls
+      .filter(([url]: [string]) => url.includes("/tasks/111/subtasks"))
+      .map(([, body]: [string, any]) => body.data);
+
+  test("otto's approval hands the next tier an FYI review, not a Review", async () => {
+    mockAsana();
+    mockGithub(true, approvedBy("otto-bot-git"));
+    await handleReview(approvalBy("otto-bot-git", [DEV]));
+    const creates = subtaskCreates();
+    expect(creates).toHaveLength(1);
+    expect(creates[0]).toMatchObject({
+      name: "FYI Review - merged to sub-PR",
+      assignee: DEV.asanaId,
+      approval_status: "pending",
+    });
+    expect(creates[0].html_notes).toContain("nobody is waiting on you");
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+
+  test("a peer's approval hands the next tier an FYI review too", async () => {
+    mockAsana();
+    mockGithub(true, approvedBy(PEER.githubName));
+    await handleReview(approvalBy(PEER.githubName, [DEV]));
+    expect(subtaskCreates().map((subtask: any) => subtask.name)).toEqual([
+      "FYI Review - merged to sub-PR",
+    ]);
+  });
+
+  test("a reviewer who already answered their FYI is not given a second", async () => {
+    mockAsana({
+      subtasks: [
+        {
+          gid: "answered-fyi",
+          name: "FYI Review - merged to sub-PR",
+          resource_subtype: "approval",
+          completed: true,
+          created_by: { gid: OTTO_ASANA_ID },
+          assignee: { gid: DEV.asanaId },
+        },
+      ],
+    });
+    mockGithub(true, approvedBy(PEER.githubName));
+    await handleReview(approvalBy(PEER.githubName, [DEV]));
+    expect(subtaskCreates()).toHaveLength(0);
+  });
+
+  test("the last approval does not move the merged PR's task to Approved", async () => {
+    mockAsana({ taskSection: "Done" });
+    mockGithub(true, approvedBy(PEER.githubName));
+    await handleReview(approvalBy(PEER.githubName));
+    expect(movesTo("Approved")).toHaveLength(0);
+  });
+
+  test("the same approvals on an open PR still call a Review and promote", async () => {
+    mockAsana();
+    mockGithub(false, approvedBy(PEER.githubName));
+    await handleReview(approvalBy(PEER.githubName, [DEV]));
+    expect(subtaskCreates().map((subtask: any) => subtask.name)).toEqual([
+      "Blocking Review",
+    ]);
+
+    jest.clearAllMocks();
+    mockAsana();
+    mockGithub(false, approvedBy(PEER.githubName));
+    await handleReview(approvalBy(PEER.githubName));
+    expect(movesTo("Approved")).toHaveLength(1);
+  });
+});
+
 describe("a merge turns the open reviews into FYI reviews", () => {
   const approvalSubtask = (overrides: any) => ({
     resource_subtype: "approval",

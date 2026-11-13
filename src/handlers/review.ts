@@ -381,6 +381,15 @@ const handleApprovalCascade = async (
 
   const followers: string[] = [];
 
+  // A review can land after the merge. Nobody the cascade reaches is being
+  // waited on by then, so each gets the FYI a merge leaves instead of a
+  // Review, and the late approval promotes nothing.
+  const { merged, base } = pullRequestResponse.data;
+  const callReviewers = (taskId: string, reviewers: any[]) =>
+    merged
+      ? asana.addFyiReviews(taskId, reviewers, base.ref, event.prUrl)
+      : asana.addRequestedReviews(taskId, reviewers, event.prUrl);
+
   // Otto's answer opening the stage is what calls the peers: they were
   // requested while the PR still waited on otto, so that request called
   // nobody. Whoever GitHub still waits on in the tier is called, and one
@@ -392,25 +401,25 @@ const handleApprovalCascade = async (
     );
     for (const reviewer of peerReviewers) followers.push(reviewer.asanaId);
     for (const taskId of event.taskIds) {
-      await asana.addRequestedReviews(taskId, peerReviewers, event.prUrl);
+      await callReviewers(taskId, peerReviewers);
     }
   }
 
   if (approvedByPeer && !approvedByDev) {
     for (const reviewer of devReviewers) followers.push(reviewer.asanaId);
     for (const taskId of event.taskIds) {
-      await asana.addRequestedReviews(taskId, devReviewers, event.prUrl);
+      await callReviewers(taskId, devReviewers);
     }
   }
 
   if (approvedByPeer && approvedByDev && !approvedByQa) {
     for (const reviewer of qaReviewers) followers.push(reviewer.asanaId);
     for (const taskId of event.taskIds) {
-      await asana.addRequestedReviews(taskId, qaReviewers, event.prUrl);
+      await callReviewers(taskId, qaReviewers);
     }
   }
 
-  if (fullyApproved) {
+  if (fullyApproved && !merged) {
     for (const taskId of event.taskIds) {
       await asana.moveTaskToSection(taskId, SECTIONS.APPROVED);
     }
