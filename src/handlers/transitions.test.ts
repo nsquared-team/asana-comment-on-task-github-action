@@ -3423,10 +3423,11 @@ describe("reviewers wait for green CI", () => {
       },
     });
 
-  // PR #4471: CI was red on the head commit, the author marked the PR ready,
+  // The sequence that let a failing PR reach a reviewer: CI was red on the
+  // head commit, the author marked the PR ready,
   // CI reported red again, and a peer approved. The PR got a Review subtask
   // and sat in Testing / Review with a failing CI.
-  test("PR #4471 replay: ready, red again, then a peer's approval never hand out a Review or move the task", async () => {
+  test("ready on a red commit, red again, then a peer's approval never hand out a Review or move the task", async () => {
     mockLiveAsana([ciRecord("rejected", SHA_A)]);
     mockGithubWorld({ head: SHA_A });
     await syncPullRequest("ready_for_review", "", { head: { sha: SHA_A } });
