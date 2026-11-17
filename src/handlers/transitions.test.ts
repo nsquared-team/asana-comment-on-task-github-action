@@ -3561,6 +3561,32 @@ describe("reviewers wait for green CI", () => {
       expect(reviewCreates()[0][1].data.assignee).toBe(PEER.asanaId);
     });
 
+    // GitHub answers null while it recomputes mergeability. The re-check is
+    // the only call the peer CI held back will get, so it cannot stand down.
+    test("a green result calls the held peer while GitHub is still computing mergeability", async () => {
+      mockLiveAsana([], { taskSection: "In Progress" });
+      mockGithubWorld({ head: SHA_A, mergeable: null });
+
+      await syncPullRequest("synchronize", "pending", { head: { sha: SHA_A } });
+      await syncPullRequest("synchronize", "approved", {
+        head: { sha: SHA_A },
+      });
+      expect(setFailed).not.toHaveBeenCalled();
+      expect(reviewCreates()).toHaveLength(1);
+      expect(reviewCreates()[0][1].data.assignee).toBe(PEER.asanaId);
+    });
+
+    test("a green result on a PR GitHub reports as conflicting calls nobody", async () => {
+      mockLiveAsana([], { taskSection: "In Progress" });
+      mockGithubWorld({ head: SHA_A, mergeable: false });
+
+      await syncPullRequest("synchronize", "pending", { head: { sha: SHA_A } });
+      await syncPullRequest("synchronize", "approved", {
+        head: { sha: SHA_A },
+      });
+      expect(reviewCreates()).toHaveLength(0);
+    });
+
     test("a green result for a commit older than the PR's head moves nothing and calls nobody", async () => {
       mockLiveAsana([], { taskSection: "In Progress" });
       mockGithubWorld({

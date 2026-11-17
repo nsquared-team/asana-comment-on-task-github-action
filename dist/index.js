@@ -19621,7 +19621,13 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
     // Unknown mergeability is not evidence here. The cascade reads it as
     // mergeable so an unanswered GitHub never parks a task; acting on it after
     // a conflict alert would hand back the very subtasks the alert cleared.
-    if (pullRequest.mergeable !== true)
+    // A green CI result is the exception: GitHub starts no pull_request run on
+    // a conflicting PR, and this re-check is the only call the reviewers CI
+    // held back will get, so it stands down there on a known conflict alone.
+    const mergeable = event.ciStatus === "approved"
+        ? pullRequest.mergeable !== false
+        : pullRequest.mergeable === true;
+    if (!mergeable)
         return;
     // The run for an approval reads the PR before GitHub has taken the approver
     // off its list; the approval is the fresher fact, so the approver is not
