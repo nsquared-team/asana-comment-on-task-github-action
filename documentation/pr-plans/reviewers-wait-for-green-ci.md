@@ -14,7 +14,7 @@ Risk: live the moment it merges in every workflow that runs the action at @main 
 
 - [x] A task CI has never reported on behaves exactly as today.
 - [x] Once CI has reported on a task, no human "Review" subtask is created unless CI's latest result is green for the PR's current commit — on every path: opened or reopened ready, marked ready for review, reviewer requested, the approval cascade, and the after-event re-check.
-- [ ] Under that same condition the task is never promoted to Testing / Review or Approved; while CI is red it stays in Next. A dismissed approval still takes a task out of Approved, into Testing / Review.
+- [x] Under that same condition the task is never promoted to Testing / Review or Approved; while CI is red it stays in Next. A dismissed approval still takes a task out of Approved, into Testing / Review.
 - [x] A green result for the current commit on a ready PR calls every reviewer the gate held back (after otto's stage, as today) and moves the task to Testing / Review; a task parked for a changes-request or a conflict stays parked.
 - [x] A green result calls the held reviewers while GitHub is still computing mergeability, and calls nobody on a PR GitHub reports as conflicting.
 - [x] Every red result withdraws open review requests and parks the task in Next, whatever the previous result. Answered reviews are kept.
