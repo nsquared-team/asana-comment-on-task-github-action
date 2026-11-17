@@ -19547,8 +19547,14 @@ const handleReview = (event) => __awaiter(void 0, void 0, void 0, function* () {
     // closes the peer stage; its dismissed changes-request was overruled.
     if (event.action === "dismissed" && !event.isDraft) {
         for (const taskId of event.taskIds) {
-            if (!(yield (0, ciGate_1.ciClearsReview)(event, taskId)))
-                continue;
+            // CI holds the way into review, never the way out of Approved: the
+            // task leaves it even while CI is not green, and nobody is called.
+            if (!(yield (0, ciGate_1.ciClearsReview)(event, taskId))) {
+                const { memberships } = yield asana.getTask(taskId);
+                const inApproved = memberships.some((membership) => { var _a; return ((_a = membership.section) === null || _a === void 0 ? void 0 : _a.name) === SECTIONS.APPROVED; });
+                if (!inApproved)
+                    continue;
+            }
             yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, SECTIONS.PROTECTED_FROM_DEMOTION);
         }
         const alreadyRequested = event.requestedReviewers.some((requested) => requested.githubName === event.username);

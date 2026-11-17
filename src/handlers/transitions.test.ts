@@ -3497,10 +3497,10 @@ describe("reviewers wait for green CI", () => {
       expect(movesTo("Approved")).toHaveLength(0);
     });
 
-    test("a dismissed review does not pull the task back into Testing / Review", async () => {
-      mockAsana({ taskSection: "Approved", subtasks: [record] });
+    const dismissal = (taskSection: string) => {
+      mockAsana({ taskSection, subtasks: [record] });
       mockGithubWorld({ head });
-      await handleReview(
+      return handleReview(
         baseEvent({
           eventName: "pull_request_review",
           action: "dismissed",
@@ -3510,7 +3510,18 @@ describe("reviewers wait for green CI", () => {
           commentUrl: "https://github.com/r/pull/42#review-dismissed",
         })
       );
+    };
+
+    test("a dismissed review does not pull a task parked in Next into Testing / Review", async () => {
+      await dismissal("Next");
       expect(movesTo("Testing / Review")).toHaveLength(0);
+    });
+
+    // The sign-off the task sat in Approved on is gone, whatever CI says.
+    test("a dismissed review still takes the task out of Approved and hands out no Review", async () => {
+      await dismissal("Approved");
+      expect(movesTo("Testing / Review")).toHaveLength(1);
+      expect(reviewCreates()).toHaveLength(0);
     });
   });
 

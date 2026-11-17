@@ -522,7 +522,15 @@ export const handleReview = async (event: SyncEvent) => {
   // closes the peer stage; its dismissed changes-request was overruled.
   if (event.action === "dismissed" && !event.isDraft) {
     for (const taskId of event.taskIds) {
-      if (!(await ciClearsReview(event, taskId))) continue;
+      // CI holds the way into review, never the way out of Approved: the
+      // task leaves it even while CI is not green, and nobody is called.
+      if (!(await ciClearsReview(event, taskId))) {
+        const { memberships } = await asana.getTask(taskId);
+        const inApproved = memberships.some(
+          (membership: any) => membership.section?.name === SECTIONS.APPROVED
+        );
+        if (!inApproved) continue;
+      }
       await asana.moveTaskToSection(
         taskId,
         SECTIONS.TESTING_REVIEW,
