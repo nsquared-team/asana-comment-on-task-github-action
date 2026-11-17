@@ -14,7 +14,7 @@ export const run = async (context: any) => {
     setOutput("event", event.eventName);
     setOutput("action", event.action);
 
-    // CI-status invocations (comment-text: approved / rejected /
+    // CI-status invocations (comment-text: approved / rejected / pending /
     // edit_pr_description) come from the consumer repos' CI pipelines and
     // only sync the CI verdict — they never post PR comments.
     if (event.eventName === "pull_request" && event.ciStatus) {

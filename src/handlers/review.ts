@@ -695,7 +695,6 @@ export const reconcileReviewState = async (event: SyncEvent) => {
   for (const taskId of event.taskIds) {
     // A task a person closed is finished, whatever its pull request says.
     if ((await asana.getTask(taskId)).completed) continue;
-    if (!(await ciClearsReview(event, taskId, pullRequest.head?.sha))) continue;
 
     // A review whose run overlapped the run creating its subtask mirrored
     // its verdict onto nothing, leaving a pending approval nobody will
@@ -714,6 +713,10 @@ export const reconcileReviewState = async (event: SyncEvent) => {
     // handler set from a stale payload is put right - on the two exits below
     // as well, which never reach the add helper.
     await asana.syncBlockingReviewTitles(taskId, activeTier);
+
+    // CI holds the promotion and the calls below, not the two repairs above:
+    // those only bring Asana in line with what GitHub already says.
+    if (!(await ciClearsReview(event, taskId, pullRequest.head?.sha))) continue;
 
     if (fullyApproved && !waitingOnOtto) {
       await asana.moveTaskToSection(taskId, SECTIONS.APPROVED, leaveAlone);

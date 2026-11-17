@@ -62,7 +62,7 @@ The rows above each mirror one transition. After any of them runs, the action re
 
 - every reviewer of the active tier GitHub is still waiting on gets a pending "Review" subtask and the task moves to Testing / Review — unless the PR is waiting on otto, in which case the task moves and nobody is called yet;
 - once every tier has approved, GitHub waits on nobody and the PR is not waiting on otto, the task moves to Approved instead — including an approval given while the PR was conflicting, which counts as soon as the conflict is gone. An approver the author asks to review again keeps the tiers satisfied, but their fresh "Review" subtask stays pending and the task stays in Testing / Review until they answer;
-- a pending "Review" subtask whose reviewer already approved on GitHub, and is not being asked again, is marked approved (a review that landed while its subtask was still being created).
+- a pending "Review" subtask whose reviewer already approved on GitHub, and is not being asked again, is marked approved (a review that landed while its subtask was still being created). This one does not wait on CI: it only mirrors what GitHub already says.
 
 That is what makes Asana converge on the PR whatever order events arrive in — a conflict resolved, a webhook that never fired, two runs that overlapped. A task already in the right section is left where it is — Asana puts a moved task at the top of its section, so restating must never reshuffle the board. The re-check leaves a task a person has completed alone, respects Blocked, Done and the released columns, does nothing while GitHub has not computed mergeability yet (the re-check after a green CI result is the exception: only a known conflict stops it, because no other event will call the reviewers CI held back), and skips CI-rejection, CI-pending and description-edit runs (the first has just parked the task on purpose, the second holds everything until the verdict, the third never touches Asana).
 
@@ -89,7 +89,7 @@ Asana does not reject a comment for a tag it does not accept: it shows the whole
 The same action runs in two modes, switched by `comment-text`:
 
 1. **PR-activity sync** (any other `comment-text`, used by the fleet-wide `asana.yaml`): mirrors comments/reviews to Asana, adds followers, moves sections, manages review subtasks.
-2. **CI-status sync** (`comment-text: approved | rejected | pending | edit_pr_description`, used by the repos' CI pipelines; consumer CI workflows post `pending` at the start of every pull-request run, drafts included, after their `ci bypass` check): records the CI verdict on the "Automated CI Testing" subtask and moves the task; `edit_pr_description` instead injects the CI sandbox block into the PR description. CI-status runs never post PR comments.
+2. **CI-status sync** (`comment-text: approved | rejected | pending | edit_pr_description`, used by the repos' CI pipelines; `pending` is for a consumer CI workflow to post at the start of every pull-request run, drafts included, after its `ci bypass` check): records the CI verdict on the "Automated CI Testing" subtask and moves the task; `edit_pr_description` instead injects the CI sandbox block into the PR description. CI-status runs never post PR comments.
 
 ## Inputs
 

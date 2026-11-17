@@ -18676,6 +18676,17 @@ const parkTask = (taskId) => __awaiter(void 0, void 0, void 0, function* () {
     yield asana.deleteReviewSubtasks(taskId);
     yield asana.moveTaskToSection(taskId, SECTIONS.NEXT, SECTIONS.PROTECTED_FROM_DEMOTION);
 });
+// Losing the read must not stop the verdict being recorded on the tasks that
+// follow: this run just leaves the task where it is.
+const headIsTestedCommit = (event) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        return yield (0, ciGate_1.isCurrentCommit)(event, event.headSha);
+    }
+    catch (error) {
+        console.warn("Failed to compare the tested commit to the head:", error);
+        return false;
+    }
+});
 const handleCiStatus = (event) => __awaiter(void 0, void 0, void 0, function* () {
     if (!CI_ACTIONS.includes(event.action))
         return;
@@ -18712,7 +18723,7 @@ const handleCiStatus = (event) => __awaiter(void 0, void 0, void 0, function* ()
         if (event.ciStatus === "approved" &&
             (previous === "rejected" || previous === "pending") &&
             !event.isDraft &&
-            (yield (0, ciGate_1.isCurrentCommit)(event, event.headSha))) {
+            (yield headIsTestedCommit(event))) {
             // After a red only a review or release position is protected; after a
             // pending run the task may be parked for a changes-request or a
             // conflict, and stays parked.
@@ -19690,14 +19701,12 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
         // A task a person closed is finished, whatever its pull request says.
         if ((yield asana.getTask(taskId)).completed)
             continue;
-        if (!(yield (0, ciGate_1.ciClearsReview)(event, taskId, (_e = pullRequest.head) === null || _e === void 0 ? void 0 : _e.sha)))
-            continue;
         // A review whose run overlapped the run creating its subtask mirrored
         // its verdict onto nothing, leaving a pending approval nobody will
         // answer. GitHub's verdict wins.
         for (const subtask of yield asana.getAllApprovalSubtasks(taskId, otto)) {
             if (asana.isPendingReviewSubtask(subtask) &&
-                approvedAsanaIds.includes((_f = subtask.assignee) === null || _f === void 0 ? void 0 : _f.gid)) {
+                approvedAsanaIds.includes((_e = subtask.assignee) === null || _e === void 0 ? void 0 : _e.gid)) {
                 yield asana.updateApprovalSubtask(subtask.gid, {
                     approval_status: "approved",
                 });
@@ -19707,6 +19716,10 @@ const reconcileReviewState = (event) => __awaiter(void 0, void 0, void 0, functi
         // handler set from a stale payload is put right - on the two exits below
         // as well, which never reach the add helper.
         yield asana.syncBlockingReviewTitles(taskId, activeTier);
+        // CI holds the promotion and the calls below, not the two repairs above:
+        // those only bring Asana in line with what GitHub already says.
+        if (!(yield (0, ciGate_1.ciClearsReview)(event, taskId, (_f = pullRequest.head) === null || _f === void 0 ? void 0 : _f.sha)))
+            continue;
         if (fullyApproved && !waitingOnOtto) {
             yield asana.moveTaskToSection(taskId, SECTIONS.APPROVED, leaveAlone);
             continue;
@@ -19914,7 +19927,7 @@ const run = (context) => __awaiter(void 0, void 0, void 0, function* () {
         const event = (0, event_1.buildEvent)(context);
         (0, core_1.setOutput)("event", event.eventName);
         (0, core_1.setOutput)("action", event.action);
-        // CI-status invocations (comment-text: approved / rejected /
+        // CI-status invocations (comment-text: approved / rejected / pending /
         // edit_pr_description) come from the consumer repos' CI pipelines and
         // only sync the CI verdict — they never post PR comments.
         if (event.eventName === "pull_request" && event.ciStatus) {

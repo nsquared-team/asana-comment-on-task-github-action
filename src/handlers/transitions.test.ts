@@ -3010,21 +3010,24 @@ describe("otto is the stage before the peers", () => {
     expect(reviewCreates()).toHaveLength(0);
   });
 
-  test("an unreadable reviews list still records the CI verdict", async () => {
+  // The CI handler no longer reads the reviews; what it reads from GitHub is
+  // the PR's head commit, and losing that read must cost no task its verdict.
+  test("an unreadable GitHub still records the CI verdict on every linked task", async () => {
     mockAsana({ subtasks: [rejectedCi] });
     githubGet.mockRejectedValue(new Error("GitHub unreachable"));
     await handleCiStatus(
       baseEvent({
         action: "synchronize",
         ciStatus: "approved",
-        requestedReviewers: [PEER],
+        headSha: "a".repeat(40),
+        taskIds: ["111", "222"],
       })
     );
     const verdictWrites = asanaPut.mock.calls.filter(([url]: [string]) =>
       url.includes(rejectedCi.gid)
     );
-    expect(verdictWrites).toHaveLength(1);
-    expect(reviewCreates()).toHaveLength(0);
+    expect(verdictWrites).toHaveLength(2);
+    expect(movesTo("Testing / Review")).toHaveLength(0);
   });
 
   test("a peer requested after otto approved is called", async () => {
@@ -3526,6 +3529,21 @@ describe("reviewers wait for green CI", () => {
       expect(reviewCreates()).toHaveLength(0);
     }
   );
+
+  // CI holds calls and promotions, not the re-check's repairs: an approval
+  // GitHub already has is mirrored onto its subtask whatever CI says.
+  test("the re-check marks an approved reviewer's pending Review approved while CI is pending, and promotes nothing", async () => {
+    mockAsana({
+      taskSection: "Testing / Review",
+      subtasks: [ciRecord("pending", SHA_A), reviewSubtask(PEER)],
+    });
+    mockGithubWorld({ head: SHA_A, requested: [], reviews: [peerApproved] });
+    await reconcileReviewState(commentEvent);
+    expect(asanaPut).toHaveBeenCalledWith(`/tasks/review-${PEER.githubName}`, {
+      data: { approval_status: "approved" },
+    });
+    expect(movesTo("Approved")).toHaveLength(0);
+  });
 
   // The merge hands out its FYIs without asking CI, so a late approval's do
   // not wait on it either.

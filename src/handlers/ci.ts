@@ -53,6 +53,17 @@ const parkTask = async (taskId: string) => {
   );
 };
 
+// Losing the read must not stop the verdict being recorded on the tasks that
+// follow: this run just leaves the task where it is.
+const headIsTestedCommit = async (event: SyncEvent) => {
+  try {
+    return await isCurrentCommit(event, event.headSha);
+  } catch (error) {
+    console.warn("Failed to compare the tested commit to the head:", error);
+    return false;
+  }
+};
+
 export const handleCiStatus = async (event: SyncEvent) => {
   if (!CI_ACTIONS.includes(event.action)) return;
 
@@ -99,7 +110,7 @@ export const handleCiStatus = async (event: SyncEvent) => {
       event.ciStatus === "approved" &&
       (previous === "rejected" || previous === "pending") &&
       !event.isDraft &&
-      (await isCurrentCommit(event, event.headSha))
+      (await headIsTestedCommit(event))
     ) {
       // After a red only a review or release position is protected; after a
       // pending run the task may be parked for a changes-request or a
