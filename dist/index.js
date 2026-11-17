@@ -19289,6 +19289,13 @@ const handleApprovalCascade = (event, requestedReviewers) => __awaiter(void 0, v
     const devReviewers = requestedReviewers.filter((reviewer) => reviewer.team === "DEV");
     const qaReviewers = requestedReviewers.filter((reviewer) => reviewer.team === "QA");
     const followers = [];
+    // A review can land after the merge. Nobody the cascade reaches is being
+    // waited on by then, so each gets the FYI a merge leaves instead of a
+    // Review, and the late approval promotes nothing.
+    const { merged, base } = pullRequestResponse.data;
+    const callReviewers = (taskId, reviewers) => merged
+        ? asana.addFyiReviews(taskId, reviewers, base.ref, event.prUrl)
+        : asana.addRequestedReviews(taskId, reviewers, event.prUrl);
     // Otto's answer opening the stage is what calls the peers: they were
     // requested while the PR still waited on otto, so that request called
     // nobody. Whoever GitHub still waits on in the tier is called, and one
@@ -19299,24 +19306,24 @@ const handleApprovalCascade = (event, requestedReviewers) => __awaiter(void 0, v
         for (const reviewer of peerReviewers)
             followers.push(reviewer.asanaId);
         for (const taskId of event.taskIds) {
-            yield asana.addRequestedReviews(taskId, peerReviewers, event.prUrl);
+            yield callReviewers(taskId, peerReviewers);
         }
     }
     if (approvedByPeer && !approvedByDev) {
         for (const reviewer of devReviewers)
             followers.push(reviewer.asanaId);
         for (const taskId of event.taskIds) {
-            yield asana.addRequestedReviews(taskId, devReviewers, event.prUrl);
+            yield callReviewers(taskId, devReviewers);
         }
     }
     if (approvedByPeer && approvedByDev && !approvedByQa) {
         for (const reviewer of qaReviewers)
             followers.push(reviewer.asanaId);
         for (const taskId of event.taskIds) {
-            yield asana.addRequestedReviews(taskId, qaReviewers, event.prUrl);
+            yield callReviewers(taskId, qaReviewers);
         }
     }
-    if (fullyApproved) {
+    if (fullyApproved && !merged) {
         for (const taskId of event.taskIds) {
             yield asana.moveTaskToSection(taskId, SECTIONS.APPROVED);
         }
