@@ -6,6 +6,7 @@ import { handleReview, reconcileReviewState } from "./review";
 import { handleComment } from "./comment";
 import { run as runSync } from "../run";
 import { SyncEvent } from "../event";
+import { isValidAsanaHtml } from "../format";
 import * as INPUTS from "../constants/inputs";
 import { getInput, setFailed } from "@actions/core";
 
@@ -1361,6 +1362,108 @@ describe("a merge conflict pauses the cascade", () => {
     mockAsana();
     mockGithub(null, peerApproved);
     await handleReview(peerApproval());
+    expect(movesTo("Approved")).toHaveLength(1);
+  });
+});
+
+describe("a review that lands after the merge", () => {
+  const DEV = { githubName: "some-dev", asanaId: "dev-asana-id", team: "DEV" };
+
+  // The merged PR this was found on came back with `mergeable: null`, which
+  // the conflict guard lets through, so `merged` is all that sets it apart.
+  const mockGithub = (merged: boolean, reviews: any[]) =>
+    githubGet.mockImplementation((url: string) =>
+      Promise.resolve({
+        data: url.includes("/reviews")
+          ? reviews
+          : { mergeable: null, merged, base: { ref: "feature-root" } },
+      })
+    );
+
+  const approvalBy = (githubName: string, requestedReviewers: any[] = []) =>
+    baseEvent({
+      eventName: "pull_request_review",
+      action: "submitted",
+      reviewState: "approved",
+      username: githubName,
+      commentUrl: "https://github.com/r/pull/42#review-after-merge",
+      requestedReviewers,
+    });
+
+  const approvedBy = (githubName: string) => [
+    {
+      user: { login: githubName },
+      state: "APPROVED",
+      submitted_at: "2026-11-11T15:36:33Z",
+    },
+  ];
+
+  const subtaskCreates = () =>
+    asanaPost.mock.calls
+      .filter(([url]: [string]) => url.includes("/tasks/111/subtasks"))
+      .map(([, body]: [string, any]) => body.data);
+
+  test("otto's approval hands the next tier an FYI review, not a Review", async () => {
+    mockAsana();
+    mockGithub(true, approvedBy("otto-bot-git"));
+    await handleReview(approvalBy("otto-bot-git", [DEV]));
+    const creates = subtaskCreates();
+    expect(creates).toHaveLength(1);
+    expect(creates[0]).toMatchObject({
+      name: "FYI Review - merged to sub-PR",
+      assignee: DEV.asanaId,
+      approval_status: "pending",
+    });
+    expect(creates[0].html_notes).toContain("nobody is waiting on you");
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+
+  test("a peer's approval hands the next tier an FYI review too", async () => {
+    mockAsana();
+    mockGithub(true, approvedBy(PEER.githubName));
+    await handleReview(approvalBy(PEER.githubName, [DEV]));
+    expect(subtaskCreates().map((subtask: any) => subtask.name)).toEqual([
+      "FYI Review - merged to sub-PR",
+    ]);
+  });
+
+  test("a reviewer who already answered their FYI is not given a second", async () => {
+    mockAsana({
+      subtasks: [
+        {
+          gid: "answered-fyi",
+          name: "FYI Review - merged to sub-PR",
+          resource_subtype: "approval",
+          completed: true,
+          created_by: { gid: OTTO_ASANA_ID },
+          assignee: { gid: DEV.asanaId },
+        },
+      ],
+    });
+    mockGithub(true, approvedBy(PEER.githubName));
+    await handleReview(approvalBy(PEER.githubName, [DEV]));
+    expect(subtaskCreates()).toHaveLength(0);
+  });
+
+  test("the last approval does not move the merged PR's task to Approved", async () => {
+    mockAsana({ taskSection: "Done" });
+    mockGithub(true, approvedBy(PEER.githubName));
+    await handleReview(approvalBy(PEER.githubName));
+    expect(movesTo("Approved")).toHaveLength(0);
+  });
+
+  test("the same approvals on an open PR still call a Review and promote", async () => {
+    mockAsana();
+    mockGithub(false, approvedBy(PEER.githubName));
+    await handleReview(approvalBy(PEER.githubName, [DEV]));
+    expect(subtaskCreates().map((subtask: any) => subtask.name)).toEqual([
+      "Blocking Review",
+    ]);
+
+    jest.clearAllMocks();
+    mockAsana();
+    mockGithub(false, approvedBy(PEER.githubName));
+    await handleReview(approvalBy(PEER.githubName));
     expect(movesTo("Approved")).toHaveLength(1);
   });
 });
@@ -3247,6 +3350,8 @@ describe("reviewers wait for green CI", () => {
     reviews = [] as any[],
     compare = compareOf("ahead", ["Rework the query builder"]),
     draft = false,
+    mergeable = true as boolean | null,
+    merged = false,
   } = {}) =>
     githubGet.mockImplementation((url: string) =>
       Promise.resolve({
@@ -3257,9 +3362,11 @@ describe("reviewers wait for green CI", () => {
           : url.includes("/timeline") || url.includes("/comments")
           ? []
           : {
-              state: "open",
+              state: merged ? "closed" : "open",
               draft,
-              mergeable: true,
+              mergeable,
+              merged,
+              base: { ref: "main" },
               head: { sha: head },
               requested_reviewers: requested.map((login) => ({ login })),
               user: { login: "the-author" },
@@ -3418,6 +3525,23 @@ describe("reviewers wait for green CI", () => {
       expect(reviewCreates()).toHaveLength(0);
     }
   );
+
+  // The merge hands out its FYIs without asking CI, so a late approval's do
+  // not wait on it either.
+  test("a late approval on a merged PR still leaves the next tier its FYI while CI's record is red", async () => {
+    mockAsana({ subtasks: [ciRecord("rejected", SHA_A)] });
+    mockGithubWorld({
+      head: SHA_A,
+      merged: true,
+      mergeable: null,
+      requested: [DEV.githubName],
+      reviews: [peerApproved],
+    });
+    await handleReview(peerApproval([DEV]));
+    expect(
+      subtaskCreates().map(([, payload]: [string, any]) => payload.data.name)
+    ).toEqual(["FYI Review - merged to main"]);
+  });
 
   describe("green for the current commit", () => {
     test("a green result after CI announced its commit moves the task to review and calls the peer GitHub lists", async () => {
@@ -3624,5 +3748,95 @@ describe("reviewers wait for green CI", () => {
       );
       expect(asanaDelete).not.toHaveBeenCalledWith("/tasks/ci-1");
     });
+  });
+});
+
+describe("every mirrored comment is html Asana keeps as rich text", () => {
+  // Asana stores a body with one tag it does not accept as literal text, so
+  // the reader sees every tag. The wrapper the handlers add is part of what
+  // Asana checks, so it is checked here with the converted body inside it.
+  const MARKDOWN =
+    "<!-- marker -->\n## Heading\n\n**bold** `a->b` R&D\n\n| a | b |\n|---|---|\n| 1 | 2 |";
+  const URL_WITH_QUERY = "https://github.com/o/r/pull/1?a=1&b=2#issuecomment-1";
+
+  const postedHtml = () =>
+    [...asanaPost.mock.calls, ...asanaPut.mock.calls]
+      .filter(([url]: [string]) => url.includes("/stories"))
+      .map(([, payload]: [string, any]) => payload.data.html_text as string);
+
+  test.each([
+    ["a person's comment", { username: "MariamElZaatari" }],
+    ["otto's comment", { username: "otto-bot-git" }],
+    ["a quote reply", { rawCommentBody: `> earlier\n\n${MARKDOWN}` }],
+    [
+      "a comment on a file's line",
+      {
+        eventName: "pull_request_review_comment",
+        commentPath: "app/<odd>&name.php",
+        commentLine: 3,
+      },
+    ],
+  ])("%s", async (_name: string, overrides: Partial<SyncEvent>) => {
+    mockAsana();
+    await handleComment(
+      baseEvent({
+        eventName: "issue_comment",
+        action: "created",
+        rawCommentBody: MARKDOWN,
+        commentUrl: URL_WITH_QUERY,
+        ...overrides,
+      })
+    );
+    const [html] = postedHtml();
+    expect(isValidAsanaHtml(html)).toBe(true);
+    expect(html).toContain(
+      'href="https://github.com/o/r/pull/1?a=1&amp;b=2#issuecomment-1"'
+    );
+    expect(html).not.toContain("!--");
+    expect(html).not.toContain("**");
+  });
+
+  test("a review", async () => {
+    mockAsana();
+    await handleReview(
+      baseEvent({
+        eventName: "pull_request_review",
+        action: "submitted",
+        reviewState: "commented",
+        username: "otto-bot-git",
+        rawCommentBody: MARKDOWN,
+        commentUrl: URL_WITH_QUERY,
+      })
+    );
+    const [html] = postedHtml();
+    expect(isValidAsanaHtml(html)).toBe(true);
+    expect(html).toContain("<h2>Heading</h2>");
+  });
+
+  test("an edited comment still updates the story it posted, and the new text is converted", async () => {
+    // Stories are matched by the comment url in their plain text, where Asana
+    // writes each anchor as its href.
+    mockAsana({
+      stories: [
+        {
+          gid: "story-1",
+          resource_subtype: "comment_added",
+          created_by: { gid: OTTO_ASANA_ID },
+          text: `## Heading **bold** https://github.com/o/r/pull/1#issuecomment-1`,
+        },
+      ],
+    });
+    await handleComment(
+      baseEvent({
+        eventName: "issue_comment",
+        action: "edited",
+        rawCommentBody: MARKDOWN,
+        commentUrl: "https://github.com/o/r/pull/1#issuecomment-1",
+      })
+    );
+    expect(asanaPut).toHaveBeenCalledWith("/stories/story-1", {
+      data: { html_text: expect.stringContaining("<h2>Heading</h2>") },
+    });
+    expect(isValidAsanaHtml(postedHtml()[0])).toBe(true);
   });
 });

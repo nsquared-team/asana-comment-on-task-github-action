@@ -357,12 +357,17 @@ const handleApprovalCascade = async (
   const pullRequestResponse = await githubAxios.get(githubUrl);
   if (pullRequestResponse.data.mergeable === false) return [];
 
+  const { merged, base } = pullRequestResponse.data;
+
   // CI's record holds the reviews and the promotion per task, so the loops
   // below run over the tasks it clears; when it clears none, nobody is called.
+  // A merged PR asks nobody to review, so CI holds none of its FYIs - the
+  // merge itself hands them out without asking CI either.
   const taskIds: string[] = [];
   for (const taskId of event.taskIds) {
     if (
-      await ciClearsReview(event, taskId, pullRequestResponse.data.head?.sha)
+      merged ||
+      (await ciClearsReview(event, taskId, pullRequestResponse.data.head?.sha))
     ) {
       taskIds.push(taskId);
     }
@@ -394,6 +399,14 @@ const handleApprovalCascade = async (
 
   const followers: string[] = [];
 
+  // A review can land after the merge. Nobody the cascade reaches is being
+  // waited on by then, so each gets the FYI a merge leaves instead of a
+  // Review, and the late approval promotes nothing.
+  const callReviewers = (taskId: string, reviewers: any[]) =>
+    merged
+      ? asana.addFyiReviews(taskId, reviewers, base.ref, event.prUrl)
+      : asana.addRequestedReviews(taskId, reviewers, event.prUrl);
+
   // Otto's answer opening the stage is what calls the peers: they were
   // requested while the PR still waited on otto, so that request called
   // nobody. Whoever GitHub still waits on in the tier is called, and one
@@ -405,25 +418,25 @@ const handleApprovalCascade = async (
     );
     for (const reviewer of peerReviewers) followers.push(reviewer.asanaId);
     for (const taskId of taskIds) {
-      await asana.addRequestedReviews(taskId, peerReviewers, event.prUrl);
+      await callReviewers(taskId, peerReviewers);
     }
   }
 
   if (approvedByPeer && !approvedByDev) {
     for (const reviewer of devReviewers) followers.push(reviewer.asanaId);
     for (const taskId of taskIds) {
-      await asana.addRequestedReviews(taskId, devReviewers, event.prUrl);
+      await callReviewers(taskId, devReviewers);
     }
   }
 
   if (approvedByPeer && approvedByDev && !approvedByQa) {
     for (const reviewer of qaReviewers) followers.push(reviewer.asanaId);
     for (const taskId of taskIds) {
-      await asana.addRequestedReviews(taskId, qaReviewers, event.prUrl);
+      await callReviewers(taskId, qaReviewers);
     }
   }
 
-  if (fullyApproved) {
+  if (fullyApproved && !merged) {
     for (const taskId of taskIds) {
       await asana.moveTaskToSection(taskId, SECTIONS.APPROVED);
     }
@@ -555,6 +568,7 @@ export const handleReview = async (event: SyncEvent) => {
 
   // Mirror the review itself as a comment.
   const userHTML = format.userMentionHTML(event.username);
+  const commentUrl = format.escapeAttribute(event.commentUrl);
   let commentText = "";
   switch (event.reviewState) {
     case "commented":
@@ -562,17 +576,17 @@ export const handleReview = async (event: SyncEvent) => {
       // An edited review still posts: postCommentToTasks matches the story by
       // review URL and updates it in place.
       if (!body) return;
-      commentText = `<body> ${userHTML} is requesting the following <a href="${event.commentUrl}">changes</a>:\n\n${body} </body>`;
+      commentText = `<body> ${userHTML} is requesting the following <a href="${commentUrl}">changes</a>:\n\n${body} </body>`;
       if (event.reviewState === "commented") {
-        commentText = `<body> ${userHTML} <a href="${event.commentUrl}">commented</a>:\n\n${body} </body>`;
+        commentText = `<body> ${userHTML} <a href="${commentUrl}">commented</a>:\n\n${body} </body>`;
       }
       break;
     case "approved":
       if (!body) return;
-      commentText = `<body> ${userHTML} approved with the following <a href="${event.commentUrl}">comment</a>:\n\n${body} </body>`;
+      commentText = `<body> ${userHTML} approved with the following <a href="${commentUrl}">comment</a>:\n\n${body} </body>`;
       break;
     default:
-      commentText = `<body> <a href="${event.commentUrl}">PR #${event.prNumber}</a> is ${event.reviewState} by ${userHTML} </body>`;
+      commentText = `<body> <a href="${commentUrl}">PR #${event.prNumber}</a> is ${event.reviewState} by ${userHTML} </body>`;
       break;
   }
 
