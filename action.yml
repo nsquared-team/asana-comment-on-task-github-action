@@ -22,7 +22,7 @@ inputs:
     required: false
     default: ''
   comment-text:
-    description: 'Mode switch. One of "approved" / "rejected" (CI verdict sync) or "edit_pr_description" (inject the CI sandbox block into the PR body). Any other value runs the default PR-activity sync.'
+    description: 'Mode switch. One of "approved" / "rejected" (CI verdict sync), "pending" (CI announces the commit a run is testing) or "edit_pr_description" (inject the CI sandbox block into the PR body). Any other value runs the default PR-activity sync.'
     required: false
     default: ''
   pr-description:

@@ -1,6 +1,7 @@
 import * as SECTIONS from "../constants/sections";
 import * as asana from "../asana";
 import * as utils from "../utils";
+import { ciClearsReview } from "../ciGate";
 import { postCommentToTasks } from "./comment";
 import { reviewersToCall } from "./review";
 import { SyncEvent } from "../event";
@@ -20,6 +21,7 @@ const moveTasksToInProgress = async (event: SyncEvent) => {
 const moveTasksToReview = async (event: SyncEvent, activeTier: any[]) => {
   const reviewers = await reviewersToCall(event, activeTier);
   for (const taskId of event.taskIds) {
+    if (!(await ciClearsReview(event, taskId))) continue;
     await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
     await asana.addRequestedReviews(taskId, reviewers, event.prUrl);
   }
@@ -78,6 +80,7 @@ export const handlePullRequest = async (event: SyncEvent) => {
         : [];
     const reviewers = await reviewersToCall(event, summoned);
     for (const taskId of event.taskIds) {
+      if (!(await ciClearsReview(event, taskId))) continue;
       await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
       await asana.addRequestedReviews(
         taskId,

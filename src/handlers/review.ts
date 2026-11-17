@@ -4,6 +4,7 @@ import * as SECTIONS from "../constants/sections";
 import * as asana from "../asana";
 import * as utils from "../utils";
 import * as format from "../format";
+import { ciClearsReview } from "../ciGate";
 import { buildFormattedBody, postCommentToTasks } from "./comment";
 import { SyncEvent } from "../event";
 
@@ -356,6 +357,23 @@ const handleApprovalCascade = async (
   const pullRequestResponse = await githubAxios.get(githubUrl);
   if (pullRequestResponse.data.mergeable === false) return [];
 
+  const { merged, base } = pullRequestResponse.data;
+
+  // CI's record holds the reviews and the promotion per task, so the loops
+  // below run over the tasks it clears; when it clears none, nobody is called.
+  // A merged PR asks nobody to review, so CI holds none of its FYIs - the
+  // merge itself hands them out without asking CI either.
+  const taskIds: string[] = [];
+  for (const taskId of event.taskIds) {
+    if (
+      merged ||
+      (await ciClearsReview(event, taskId, pullRequestResponse.data.head?.sha))
+    ) {
+      taskIds.push(taskId);
+    }
+  }
+  if (!taskIds.length) return [];
+
   const author = pullRequestResponse.data.user?.login;
   const reviews = await readReviews(githubUrl);
   // Otto's stage comes first: while the PR waits on it the cascade hands no
@@ -384,7 +402,6 @@ const handleApprovalCascade = async (
   // A review can land after the merge. Nobody the cascade reaches is being
   // waited on by then, so each gets the FYI a merge leaves instead of a
   // Review, and the late approval promotes nothing.
-  const { merged, base } = pullRequestResponse.data;
   const callReviewers = (taskId: string, reviewers: any[]) =>
     merged
       ? asana.addFyiReviews(taskId, reviewers, base.ref, event.prUrl)
@@ -400,27 +417,27 @@ const handleApprovalCascade = async (
       (reviewer: any) => reviewer.team === "PEER_DEV"
     );
     for (const reviewer of peerReviewers) followers.push(reviewer.asanaId);
-    for (const taskId of event.taskIds) {
+    for (const taskId of taskIds) {
       await callReviewers(taskId, peerReviewers);
     }
   }
 
   if (approvedByPeer && !approvedByDev) {
     for (const reviewer of devReviewers) followers.push(reviewer.asanaId);
-    for (const taskId of event.taskIds) {
+    for (const taskId of taskIds) {
       await callReviewers(taskId, devReviewers);
     }
   }
 
   if (approvedByPeer && approvedByDev && !approvedByQa) {
     for (const reviewer of qaReviewers) followers.push(reviewer.asanaId);
-    for (const taskId of event.taskIds) {
+    for (const taskId of taskIds) {
       await callReviewers(taskId, qaReviewers);
     }
   }
 
   if (fullyApproved && !merged) {
-    for (const taskId of event.taskIds) {
+    for (const taskId of taskIds) {
       await asana.moveTaskToSection(taskId, SECTIONS.APPROVED);
     }
   }
@@ -505,6 +522,15 @@ export const handleReview = async (event: SyncEvent) => {
   // closes the peer stage; its dismissed changes-request was overruled.
   if (event.action === "dismissed" && !event.isDraft) {
     for (const taskId of event.taskIds) {
+      // CI holds the way into review, never the way out of Approved: the
+      // task leaves it even while CI is not green, and nobody is called.
+      if (!(await ciClearsReview(event, taskId))) {
+        const { memberships } = await asana.getTask(taskId);
+        const inApproved = memberships.some(
+          (membership: any) => membership.section?.name === SECTIONS.APPROVED
+        );
+        if (!inApproved) continue;
+      }
       await asana.moveTaskToSection(
         taskId,
         SECTIONS.TESTING_REVIEW,
@@ -596,7 +622,14 @@ export const reconcileReviewState = async (event: SyncEvent) => {
   // Unknown mergeability is not evidence here. The cascade reads it as
   // mergeable so an unanswered GitHub never parks a task; acting on it after
   // a conflict alert would hand back the very subtasks the alert cleared.
-  if (pullRequest.mergeable !== true) return;
+  // A green CI result is the exception: GitHub starts no pull_request run on
+  // a conflicting PR, and this re-check is the only call the reviewers CI
+  // held back will get, so it stands down there on a known conflict alone.
+  const mergeable =
+    event.ciStatus === "approved"
+      ? pullRequest.mergeable !== false
+      : pullRequest.mergeable === true;
+  if (!mergeable) return;
 
   // The run for an approval reads the PR before GitHub has taken the approver
   // off its list; the approval is the fresher fact, so the approver is not
@@ -670,8 +703,6 @@ export const reconcileReviewState = async (event: SyncEvent) => {
   for (const taskId of event.taskIds) {
     // A task a person closed is finished, whatever its pull request says.
     if ((await asana.getTask(taskId)).completed) continue;
-    const ciSubtask = await asana.getApprovalSubtask(taskId, true, otto);
-    if (ciSubtask?.approval_status === "rejected") continue;
 
     // A review whose run overlapped the run creating its subtask mirrored
     // its verdict onto nothing, leaving a pending approval nobody will
@@ -690,6 +721,10 @@ export const reconcileReviewState = async (event: SyncEvent) => {
     // handler set from a stale payload is put right - on the two exits below
     // as well, which never reach the add helper.
     await asana.syncBlockingReviewTitles(taskId, activeTier);
+
+    // CI holds the promotion and the calls below, not the two repairs above:
+    // those only bring Asana in line with what GitHub already says.
+    if (!(await ciClearsReview(event, taskId, pullRequest.head?.sha))) continue;
 
     if (fullyApproved && !waitingOnOtto) {
       await asana.moveTaskToSection(taskId, SECTIONS.APPROVED, leaveAlone);

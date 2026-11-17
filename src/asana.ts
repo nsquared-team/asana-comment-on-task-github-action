@@ -95,12 +95,17 @@ export const getStories = async (taskId: string) => {
   return getAllPages(url);
 };
 
+export const CI_SUBTASK_NAME = "Automated CI Testing";
+
+// The CI record is not a review: it is read only through getCiSubtask, so no
+// review path (a verdict, a tier cleanup, an unmerged close) can touch it.
 export const getAllApprovalSubtasks = async (taskId: string, creator: any) => {
   const url = `${REQUESTS.TASKS_URL}${taskId}${REQUESTS.SUBTASKS_URL}`;
   const subtasks = await getAllPages(url);
   return subtasks.filter(
     (subtask: any) =>
       subtask.resource_subtype === "approval" &&
+      subtask.name !== CI_SUBTASK_NAME &&
       !subtask.completed &&
       subtask.created_by &&
       subtask.created_by.gid === creator?.asanaId
@@ -110,7 +115,8 @@ export const getAllApprovalSubtasks = async (taskId: string, creator: any) => {
 // An undefined `isComplete` matches an approval subtask in whatever state it
 // is in. Asking whether a reviewer already has one has to span both: answering
 // a review completes its subtask, so an incomplete-only look would report the
-// reviewer as empty-handed moments after they signed off.
+// reviewer as empty-handed moments after they signed off. Never returns the
+// CI record; that is getCiSubtask's.
 export const getApprovalSubtask = async (
   taskId: string,
   isComplete: boolean | undefined,
@@ -121,9 +127,23 @@ export const getApprovalSubtask = async (
   return subtasks.find(
     (subtask: any) =>
       subtask.resource_subtype === "approval" &&
+      subtask.name !== CI_SUBTASK_NAME &&
       (isComplete === undefined || subtask.completed === isComplete) &&
       subtask.assignee &&
       subtask.assignee.gid === assignee?.asanaId
+  );
+};
+
+// The CI record is assigned to otto and in any completion state: a `pending`
+// one is incomplete, a verdict completes itself.
+export const getCiSubtask = async (taskId: string) => {
+  const url = `${REQUESTS.TASKS_URL}${taskId}${REQUESTS.SUBTASKS_URL}`;
+  const subtasks = await getAllPages(url);
+  return subtasks.find(
+    (subtask: any) =>
+      subtask.resource_subtype === "approval" &&
+      subtask.name === CI_SUBTASK_NAME &&
+      subtask.assignee?.gid === ottoUser()?.asanaId
   );
 };
 
@@ -149,7 +169,6 @@ export const deleteApprovalTasks = async (approvalSubtasks: any[]) => {
 // tells its assignee whether the PR is waiting on them alone.
 export const REVIEW_NAME = "Review";
 export const BLOCKING_REVIEW_NAME = "Blocking Review";
-const CI_SUBTASK_NAME = "Automated CI Testing";
 
 const isPendingReviewName = (name?: string) =>
   name === REVIEW_NAME || name === BLOCKING_REVIEW_NAME;
@@ -186,15 +205,10 @@ export const syncBlockingReviewTitles = async (
   }
 };
 
-// Reviewer approval subtasks are named "Review" or "Blocking Review"; the CI
-// verdict subtask is named "Automated CI Testing" and must survive review
-// cleanups.
+// getAllApprovalSubtasks never returns the CI record, so this deletes reviews
+// only and the CI verdict survives every review cleanup.
 export const deleteReviewSubtasks = async (taskId: string) => {
-  const subtasks = await getAllApprovalSubtasks(taskId, ottoUser());
-  const reviewSubtasks = subtasks.filter(
-    (subtask: any) => subtask.name !== CI_SUBTASK_NAME
-  );
-  await deleteApprovalTasks(reviewSubtasks);
+  await deleteApprovalTasks(await getAllApprovalSubtasks(taskId, ottoUser()));
 };
 
 // Once the PR is merged nobody is waiting on an unanswered review, but the
