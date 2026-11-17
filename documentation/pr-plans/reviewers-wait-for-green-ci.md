@@ -20,6 +20,6 @@ Risk: live the moment it merges in every workflow that runs the action at @main 
 - [x] Every red result withdraws open review requests and parks the task in Next, whatever the previous result. Answered reviews are kept.
 - [x] A `pending` result records the commit CI is testing: it holds new calls and withdraws nothing. On top of a red result it writes nothing, so the red stands until CI reports again.
 - [x] A result for an older commit never counts for a newer one, except across commits whose subject line carries `ci bypass`.
-- [x] A merged PR's FYI reviews are not held by CI's record: an approval that lands after the merge still hands the next tier its FYI.
+- [x] A merged PR's FYI reviews are not held by CI's record: a late approval on it still hands the next tier its FYI.
 - [x] The sequence that let a failing PR reach a reviewer replays as a test and calls nobody: ready on a red commit, a red result, then a peer approval. One test per gated path fails on main and passes with the fix; existing tests that assert today's behavior on a CI-reported task are updated to the new rule, and every other test passes unchanged.
 - [x] The README documents the gate and the `pending` status, and dist/ matches a fresh build.
