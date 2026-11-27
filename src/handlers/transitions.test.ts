@@ -1425,6 +1425,120 @@ describe("a review that lands after the merge", () => {
   });
 });
 
+describe("a review requested after the merge", () => {
+  const NATALIE = {
+    githubName: "NatalieMac",
+    asanaId: "1208102635655720",
+    team: "DEV",
+  };
+
+  // GitHub's fresh answer for the pull request; its reviews list stays empty.
+  const mockGithub = (merged: boolean) =>
+    githubGet.mockImplementation((url: string) =>
+      Promise.resolve({ data: url.includes("/reviews") ? [] : { merged } })
+    );
+
+  const requested = (overrides: Partial<SyncEvent> = {}) =>
+    baseEvent({
+      action: "review_requested",
+      prBaseRef: "master",
+      requestedReviewers: [PEER],
+      eventReviewer: PEER,
+      ...overrides,
+    });
+
+  const createdNames = () =>
+    asanaPost.mock.calls
+      .filter(([url]: [string]) => url.includes("/tasks/111/subtasks"))
+      .map(([, body]: [string, any]) => body.data.name);
+
+  const sectionMoves = () =>
+    asanaPost.mock.calls.filter(([url]: [string]) => url.includes("/addTask"));
+
+  test("the reviewer gets an FYI review, not a Review, and the task stays put", async () => {
+    mockAsana({ taskSection: "Released in Alpha" });
+    await handlePullRequest(requested({ prMerged: true, prState: "closed" }));
+    const creates = asanaPost.mock.calls
+      .filter(([url]: [string]) => url.includes("/tasks/111/subtasks"))
+      .map(([, body]: [string, any]) => body.data);
+    expect(creates).toHaveLength(1);
+    expect(creates[0]).toMatchObject({
+      name: "FYI Review - merged to master",
+      assignee: PEER.asanaId,
+      approval_status: "pending",
+    });
+    expect(creates[0].html_notes).toContain("nobody is waiting on you");
+    expect(sectionMoves()).toHaveLength(0);
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+
+  test("the FYI review the merge left another tier is not deleted", async () => {
+    mockLiveAsana([
+      {
+        gid: "dev-fyi",
+        name: "FYI Review - merged to master",
+        resource_subtype: "approval",
+        completed: false,
+        created_by: { gid: OTTO_ASANA_ID },
+        assignee: { gid: NATALIE.asanaId },
+        created_at: "2026-11-26T13:28:23.000Z",
+      },
+    ]);
+    await handlePullRequest(
+      requested({
+        prMerged: true,
+        prState: "closed",
+        requestedReviewers: [NATALIE, PEER],
+      })
+    );
+    expect(createdNames()).toEqual(["FYI Review - merged to master"]);
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+
+  test("a reviewer who already holds a subtask is not given a second", async () => {
+    mockAsana({
+      subtasks: [
+        {
+          gid: "answered-review",
+          name: "Review",
+          resource_subtype: "approval",
+          completed: true,
+          created_by: { gid: OTTO_ASANA_ID },
+          assignee: { gid: PEER.asanaId },
+        },
+      ],
+    });
+    await handlePullRequest(requested({ prMerged: true, prState: "closed" }));
+    expect(createdNames()).toHaveLength(0);
+  });
+
+  test("a request made before the merge and handled after it takes the FYI path", async () => {
+    mockAsana({ taskSection: "Released in Alpha" });
+    mockGithub(true);
+    await handlePullRequest(requested());
+    expect(createdNames()).toEqual(["FYI Review - merged to master"]);
+    expect(sectionMoves()).toHaveLength(0);
+  });
+
+  test("a ready event handled after the merge moves nothing and leaves an FYI review", async () => {
+    mockAsana({ taskSection: "Released in Alpha" });
+    mockGithub(true);
+    await handlePullRequest(
+      requested({ action: "ready_for_review", eventReviewer: undefined })
+    );
+    expect(createdNames()).toEqual(["FYI Review - merged to master"]);
+    expect(sectionMoves()).toHaveLength(0);
+  });
+
+  test("the same request on an open pull request still calls a Review and moves the task", async () => {
+    mockAsana({ taskSection: "In Progress" });
+    mockGithub(false);
+    await handlePullRequest(requested());
+    expect(createdNames()).toEqual(["Blocking Review"]);
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+  });
+});
+
 describe("a merge turns the open reviews into FYI reviews", () => {
   const approvalSubtask = (overrides: any) => ({
     resource_subtype: "approval",

@@ -2,7 +2,7 @@ import * as SECTIONS from "../constants/sections";
 import * as asana from "../asana";
 import * as utils from "../utils";
 import { postCommentToTasks } from "./comment";
-import { reviewersToCall } from "./review";
+import { isMergedNow, reviewersToCall } from "./review";
 import { SyncEvent } from "../event";
 
 // No live PR to track (draft, or closed without merging) means the task is
@@ -17,11 +17,36 @@ const moveTasksToInProgress = async (event: SyncEvent) => {
   }
 };
 
-const moveTasksToReview = async (event: SyncEvent, activeTier: any[]) => {
-  const reviewers = await reviewersToCall(event, activeTier);
+// `called` is who this event summons. `outstanding` is every active-tier
+// reviewer GitHub still waits on, passed when the event summons only one of
+// them: the subtask's name reads the whole tier.
+const moveTasksToReview = async (
+  event: SyncEvent,
+  called: any[],
+  outstanding?: any[]
+) => {
+  if (!event.taskIds.length) return;
+  // A reviewer can be requested after the merge, and a run can start after
+  // the merge that followed its event. Nobody is waited on once the code is
+  // in, so whoever would be called gets the FYI a merge leaves and the task
+  // stays where the merge put it. Otto's stage ended with the merge, so it is
+  // not consulted, and an FYI clears no other tier's subtask the way a
+  // Review does.
+  if (await isMergedNow(event)) {
+    for (const taskId of event.taskIds) {
+      await asana.addFyiReviews(taskId, called, event.prBaseRef, event.prUrl);
+    }
+    return;
+  }
+  const reviewers = await reviewersToCall(event, called);
   for (const taskId of event.taskIds) {
     await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
-    await asana.addRequestedReviews(taskId, reviewers, event.prUrl);
+    await asana.addRequestedReviews(
+      taskId,
+      reviewers,
+      event.prUrl,
+      outstanding
+    );
   }
 };
 
@@ -76,16 +101,7 @@ export const handlePullRequest = async (event: SyncEvent) => {
       )
         ? [event.eventReviewer]
         : [];
-    const reviewers = await reviewersToCall(event, summoned);
-    for (const taskId of event.taskIds) {
-      await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW);
-      await asana.addRequestedReviews(
-        taskId,
-        reviewers,
-        event.prUrl,
-        activeTier
-      );
-    }
+    await moveTasksToReview(event, summoned, activeTier);
     return;
   }
 

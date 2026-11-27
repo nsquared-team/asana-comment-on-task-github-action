@@ -102,6 +102,20 @@ export const reviewersToCall = async (event: SyncEvent, reviewers: any[]) => {
   return awaitingOtto(reviews, event.requestedReviewers) ? [] : reviewers;
 };
 
+// The payload is the pull request as it was when the event fired, and a run
+// can start after the merge that followed it. A payload that says merged is
+// final; one that does not is checked against GitHub, read fresh.
+export const isMergedNow = async (event: SyncEvent) => {
+  if (event.prMerged) return true;
+  try {
+    return Boolean((await githubAxios.get(pullRequestUrl(event))).data.merged);
+  } catch (error) {
+    // Losing the read must not stall the sync: the payload's answer stands.
+    console.warn("Failed to read the pull request:", error);
+    return false;
+  }
+};
+
 // A "Comment" review from a tier reviewer is a rejection here: they looked
 // and did not approve, so the author answers it and re-requests them, exactly
 // as for changes requested. GitHub files every inline comment as a review of
