@@ -1530,12 +1530,147 @@ describe("a review requested after the merge", () => {
     expect(sectionMoves()).toHaveLength(0);
   });
 
+  test("a reviewer outside the active tier, requested after the merge, gets an FYI review too", async () => {
+    mockLiveAsana([
+      {
+        gid: "peer-fyi",
+        name: "FYI Review - merged to master",
+        resource_subtype: "approval",
+        completed: false,
+        created_by: { gid: OTTO_ASANA_ID },
+        assignee: { gid: PEER.asanaId },
+        created_at: "2026-11-26T13:28:23.000Z",
+      },
+    ]);
+    await handlePullRequest(
+      requested({
+        prMerged: true,
+        prState: "closed",
+        requestedReviewers: [PEER, NATALIE],
+        eventReviewer: NATALIE,
+      })
+    );
+    const creates = asanaPost.mock.calls
+      .filter(([url]: [string]) => url.includes("/tasks/111/subtasks"))
+      .map(([, body]: [string, any]) => body.data);
+    expect(creates).toHaveLength(1);
+    expect(creates[0]).toMatchObject({
+      name: "FYI Review - merged to master",
+      assignee: NATALIE.asanaId,
+    });
+    expect(asanaDelete).not.toHaveBeenCalled();
+  });
+
+  test("a pull request GitHub cannot return is handled as the payload describes it", async () => {
+    mockAsana({ taskSection: "In Progress" });
+    githubGet.mockImplementation((url: string) =>
+      url.includes("/reviews")
+        ? Promise.resolve({ data: [] })
+        : Promise.reject(new Error("GitHub is unavailable"))
+    );
+    await handlePullRequest(requested());
+    expect(createdNames()).toEqual(["Blocking Review"]);
+    expect(movesTo("Testing / Review")).toHaveLength(1);
+  });
+
   test("the same request on an open pull request still calls a Review and moves the task", async () => {
     mockAsana({ taskSection: "In Progress" });
     mockGithub(false);
     await handlePullRequest(requested());
     expect(createdNames()).toEqual(["Blocking Review"]);
     expect(movesTo("Testing / Review")).toHaveLength(1);
+  });
+});
+
+describe("a pull request closed without merging asks nobody for a review", () => {
+  const DEV = { githubName: "some-dev", asanaId: "dev-asana-id", team: "DEV" };
+
+  const rejectedCiSubtask = {
+    gid: "ci-1",
+    name: "Automated CI Testing",
+    resource_subtype: "approval",
+    approval_status: "rejected",
+    completed: true,
+    created_by: { gid: OTTO_ASANA_ID },
+    assignee: { gid: OTTO_ASANA_ID },
+  };
+
+  // GitHub's fresh answer for the pull request, and the reviews it lists.
+  const mockGithub = (pullRequest: any, reviews: any[] = []) =>
+    githubGet.mockImplementation((url: string) =>
+      Promise.resolve({
+        data: url.includes("/reviews") ? reviews : pullRequest,
+      })
+    );
+
+  const subtaskCreates = () =>
+    asanaPost.mock.calls.filter(([url]: [string]) =>
+      url.includes("/tasks/111/subtasks")
+    );
+
+  const sectionMoves = () =>
+    asanaPost.mock.calls.filter(([url]: [string]) => url.includes("/addTask"));
+
+  test.each(["review_requested", "ready_for_review"])(
+    "%s handled after the close creates no Review and moves nothing",
+    async (action) => {
+      mockAsana({ taskSection: "In Progress" });
+      mockGithub({ state: "closed", merged: false });
+      await handlePullRequest(
+        baseEvent({ action, requestedReviewers: [PEER], eventReviewer: PEER })
+      );
+      expect(subtaskCreates()).toHaveLength(0);
+      expect(sectionMoves()).toHaveLength(0);
+    }
+  );
+
+  test.each([
+    ["closed without merging", { state: "closed", merged: false }],
+    ["merged", { state: "closed", merged: true }],
+  ])(
+    "CI turning green on a pull request %s creates no Review and moves nothing",
+    async (_standing, pullRequest) => {
+      mockAsana({ taskSection: "In Progress", subtasks: [rejectedCiSubtask] });
+      mockGithub(pullRequest);
+      await handleCiStatus(
+        baseEvent({
+          action: "synchronize",
+          ciStatus: "approved",
+          requestedReviewers: [PEER],
+        })
+      );
+      expect(subtaskCreates()).toHaveLength(0);
+      expect(sectionMoves()).toHaveLength(0);
+      // The verdict itself is still recorded.
+      expect(asanaPut).toHaveBeenCalledWith(
+        "/tasks/ci-1",
+        expect.objectContaining({
+          data: expect.objectContaining({ approval_status: "approved" }),
+        })
+      );
+    }
+  );
+
+  test("an approval that lands after the close hands the next tier nothing", async () => {
+    mockAsana();
+    mockGithub({ state: "closed", merged: false, mergeable: null }, [
+      {
+        user: { login: PEER.githubName },
+        state: "APPROVED",
+        submitted_at: "2026-11-11T15:36:33Z",
+      },
+    ]);
+    await handleReview(
+      baseEvent({
+        eventName: "pull_request_review",
+        action: "submitted",
+        reviewState: "approved",
+        username: PEER.githubName,
+        commentUrl: "https://github.com/r/pull/42#review-after-close",
+        requestedReviewers: [DEV],
+      })
+    );
+    expect(subtaskCreates()).toHaveLength(0);
   });
 });
 

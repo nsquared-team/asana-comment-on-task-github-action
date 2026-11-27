@@ -2,7 +2,7 @@ import * as SECTIONS from "../constants/sections";
 import * as asana from "../asana";
 import * as utils from "../utils";
 import { postCommentToTasks } from "./comment";
-import { isMergedNow, reviewersToCall } from "./review";
+import { reviewersToCall, standingNow } from "./review";
 import { SyncEvent } from "../event";
 
 // No live PR to track (draft, or closed without merging) means the task is
@@ -26,13 +26,16 @@ const moveTasksToReview = async (
   outstanding?: any[]
 ) => {
   if (!event.taskIds.length) return;
+  const standing = await standingNow(event);
+  // Abandoned work asks nobody for a review and its task stays put.
+  if (standing === "abandoned") return;
   // A reviewer can be requested after the merge, and a run can start after
   // the merge that followed its event. Nobody is waited on once the code is
   // in, so whoever would be called gets the FYI a merge leaves and the task
   // stays where the merge put it. Otto's stage ended with the merge, so it is
   // not consulted, and an FYI clears no other tier's subtask the way a
   // Review does.
-  if (await isMergedNow(event)) {
+  if (standing === "merged") {
     for (const taskId of event.taskIds) {
       await asana.addFyiReviews(taskId, called, event.prBaseRef, event.prUrl);
     }
@@ -93,12 +96,18 @@ export const handlePullRequest = async (event: SyncEvent) => {
     // only that reviewer's subtask keeps parallel workflow runs from
     // duplicating each other's subtasks. Its name still reads the whole
     // tier: GitHub lists everyone requested alongside them.
+    //
+    // A request made after the merge is somebody pointing this reviewer at
+    // code that is already in. No review is live for their tier to wait
+    // behind, so the tier holds nobody back.
     const summoned =
       event.eventReviewer &&
-      activeTier.some(
-        (reviewer: any) =>
-          reviewer.githubName === event.eventReviewer.githubName
-      )
+      (event.prMerged
+        ? utils.isReviewTier(event.eventReviewer)
+        : activeTier.some(
+            (reviewer: any) =>
+              reviewer.githubName === event.eventReviewer.githubName
+          ))
         ? [event.eventReviewer]
         : [];
     await moveTasksToReview(event, summoned, activeTier);

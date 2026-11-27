@@ -3,7 +3,7 @@ import * as REQUESTS from "../constants/requests";
 import * as SECTIONS from "../constants/sections";
 import * as asana from "../asana";
 import * as utils from "../utils";
-import { reviewersToCall } from "./review";
+import { reviewersToCall, standingNow } from "./review";
 import { SyncEvent } from "../event";
 
 // CI runs fire on these pull_request actions in the consumer workflows.
@@ -58,6 +58,7 @@ export const handleCiStatus = async (event: SyncEvent) => {
   const activeTier = utils.pickReviewerTier(event.requestedReviewers);
   // Read once, however many tasks the PR is linked to.
   let reviewers: any[] | undefined;
+  let standing: string | undefined;
 
   for (const taskId of event.taskIds) {
     // The CI verdict subtask completes itself when approved/rejected, so the
@@ -65,18 +66,23 @@ export const handleCiStatus = async (event: SyncEvent) => {
     const ciSubtask = await asana.getApprovalSubtask(taskId, true, otto);
 
     if (ciSubtask) {
-      // CI recovered: red -> green. Only a ready PR re-enters review.
+      // CI recovered: red -> green. Only a ready PR re-enters review, and
+      // only while it is open: a CI run outlives the merge or the close that
+      // came while it ran, and by then nobody is waited on.
       if (
         ciSubtask.approval_status === "rejected" &&
         event.ciStatus === "approved" &&
         !event.isDraft
       ) {
-        await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, [
-          SECTIONS.APPROVED,
-          ...SECTIONS.RELEASED_SECTIONS,
-        ]);
-        if (!reviewers) reviewers = await reviewersToCall(event, activeTier);
-        await asana.addRequestedReviews(taskId, reviewers, event.prUrl);
+        if (!standing) standing = await standingNow(event);
+        if (standing === "open") {
+          await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, [
+            SECTIONS.APPROVED,
+            ...SECTIONS.RELEASED_SECTIONS,
+          ]);
+          if (!reviewers) reviewers = await reviewersToCall(event, activeTier);
+          await asana.addRequestedReviews(taskId, reviewers, event.prUrl);
+        }
       }
 
       // CI broke: green -> red. Review requests are stale; task goes back.

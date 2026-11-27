@@ -18558,22 +18558,29 @@ const handleCiStatus = (event) => __awaiter(void 0, void 0, void 0, function* ()
     const activeTier = utils.pickReviewerTier(event.requestedReviewers);
     // Read once, however many tasks the PR is linked to.
     let reviewers;
+    let standing;
     for (const taskId of event.taskIds) {
         // The CI verdict subtask completes itself when approved/rejected, so the
         // latest verdict lives on the completed subtask assigned to Otto.
         const ciSubtask = yield asana.getApprovalSubtask(taskId, true, otto);
         if (ciSubtask) {
-            // CI recovered: red -> green. Only a ready PR re-enters review.
+            // CI recovered: red -> green. Only a ready PR re-enters review, and
+            // only while it is open: a CI run outlives the merge or the close that
+            // came while it ran, and by then nobody is waited on.
             if (ciSubtask.approval_status === "rejected" &&
                 event.ciStatus === "approved" &&
                 !event.isDraft) {
-                yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, [
-                    SECTIONS.APPROVED,
-                    ...SECTIONS.RELEASED_SECTIONS,
-                ]);
-                if (!reviewers)
-                    reviewers = yield (0, review_1.reviewersToCall)(event, activeTier);
-                yield asana.addRequestedReviews(taskId, reviewers, event.prUrl);
+                if (!standing)
+                    standing = yield (0, review_1.standingNow)(event);
+                if (standing === "open") {
+                    yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, [
+                        SECTIONS.APPROVED,
+                        ...SECTIONS.RELEASED_SECTIONS,
+                    ]);
+                    if (!reviewers)
+                        reviewers = yield (0, review_1.reviewersToCall)(event, activeTier);
+                    yield asana.addRequestedReviews(taskId, reviewers, event.prUrl);
+                }
             }
             // CI broke: green -> red. Review requests are stale; task goes back.
             if (ciSubtask.approval_status === "approved" &&
@@ -18811,13 +18818,17 @@ const moveTasksToInProgress = (event) => __awaiter(void 0, void 0, void 0, funct
 const moveTasksToReview = (event, called, outstanding) => __awaiter(void 0, void 0, void 0, function* () {
     if (!event.taskIds.length)
         return;
+    const standing = yield (0, review_1.standingNow)(event);
+    // Abandoned work asks nobody for a review and its task stays put.
+    if (standing === "abandoned")
+        return;
     // A reviewer can be requested after the merge, and a run can start after
     // the merge that followed its event. Nobody is waited on once the code is
     // in, so whoever would be called gets the FYI a merge leaves and the task
     // stays where the merge put it. Otto's stage ended with the merge, so it is
     // not consulted, and an FYI clears no other tier's subtask the way a
     // Review does.
-    if (yield (0, review_1.isMergedNow)(event)) {
+    if (standing === "merged") {
         for (const taskId of event.taskIds) {
             yield asana.addFyiReviews(taskId, called, event.prBaseRef, event.prUrl);
         }
@@ -18870,8 +18881,14 @@ const handlePullRequest = (event) => __awaiter(void 0, void 0, void 0, function*
         // only that reviewer's subtask keeps parallel workflow runs from
         // duplicating each other's subtasks. Its name still reads the whole
         // tier: GitHub lists everyone requested alongside them.
+        //
+        // A request made after the merge is somebody pointing this reviewer at
+        // code that is already in. No review is live for their tier to wait
+        // behind, so the tier holds nobody back.
         const summoned = event.eventReviewer &&
-            activeTier.some((reviewer) => reviewer.githubName === event.eventReviewer.githubName)
+            (event.prMerged
+                ? utils.isReviewTier(event.eventReviewer)
+                : activeTier.some((reviewer) => reviewer.githubName === event.eventReviewer.githubName))
             ? [event.eventReviewer]
             : [];
         yield moveTasksToReview(event, summoned, activeTier);
@@ -18976,7 +18993,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.reconcileReviewState = exports.handleReview = exports.isMergedNow = exports.reviewersToCall = void 0;
+exports.reconcileReviewState = exports.handleReview = exports.standingNow = exports.standingOf = exports.reviewersToCall = void 0;
 const githubAxios_1 = __importDefault(__nccwpck_require__(1125));
 const REQUESTS = __importStar(__nccwpck_require__(4291));
 const SECTIONS = __importStar(__nccwpck_require__(6081));
@@ -19069,22 +19086,31 @@ const reviewersToCall = (event, reviewers) => __awaiter(void 0, void 0, void 0, 
     return awaitingOtto(reviews, event.requestedReviewers) ? [] : reviewers;
 });
 exports.reviewersToCall = reviewersToCall;
+// Where a pull request stands decides who is asked to review it: open, a
+// Review; merged, the FYI a merge leaves, because nobody is waited on once
+// the code is in; closed without merging, nobody at all.
+const standingOf = (pullRequest) => {
+    if (pullRequest.merged)
+        return "merged";
+    return pullRequest.state === "closed" ? "abandoned" : "open";
+};
+exports.standingOf = standingOf;
 // The payload is the pull request as it was when the event fired, and a run
-// can start after the merge that followed it. A payload that says merged is
-// final; one that does not is checked against GitHub, read fresh.
-const isMergedNow = (event) => __awaiter(void 0, void 0, void 0, function* () {
+// can start after the merge or the close that followed it. A payload that
+// says merged is final; anything else is checked against GitHub, read fresh.
+const standingNow = (event) => __awaiter(void 0, void 0, void 0, function* () {
     if (event.prMerged)
-        return true;
+        return "merged";
     try {
-        return Boolean((yield githubAxios_1.default.get(pullRequestUrl(event))).data.merged);
+        return (0, exports.standingOf)((yield githubAxios_1.default.get(pullRequestUrl(event))).data);
     }
     catch (error) {
         // Losing the read must not stall the sync: the payload's answer stands.
         console.warn("Failed to read the pull request:", error);
-        return false;
+        return (0, exports.standingOf)({ state: event.prState });
     }
 });
-exports.isMergedNow = isMergedNow;
+exports.standingNow = standingNow;
 // A "Comment" review from a tier reviewer is a rejection here: they looked
 // and did not approve, so the author answers it and re-requests them, exactly
 // as for changes requested. GitHub files every inline comment as a review of
@@ -19320,11 +19346,18 @@ const handleApprovalCascade = (event, requestedReviewers) => __awaiter(void 0, v
     const followers = [];
     // A review can land after the merge. Nobody the cascade reaches is being
     // waited on by then, so each gets the FYI a merge leaves instead of a
-    // Review, and the late approval promotes nothing.
+    // Review, and the late approval promotes nothing. One that lands on a pull
+    // request closed without merging calls nobody.
     const { merged, base } = pullRequestResponse.data;
-    const callReviewers = (taskId, reviewers) => merged
-        ? asana.addFyiReviews(taskId, reviewers, base.ref, event.prUrl)
-        : asana.addRequestedReviews(taskId, reviewers, event.prUrl);
+    const standing = (0, exports.standingOf)(pullRequestResponse.data);
+    const callReviewers = (taskId, reviewers) => __awaiter(void 0, void 0, void 0, function* () {
+        if (standing === "merged") {
+            yield asana.addFyiReviews(taskId, reviewers, base.ref, event.prUrl);
+        }
+        else if (standing === "open") {
+            yield asana.addRequestedReviews(taskId, reviewers, event.prUrl);
+        }
+    });
     // Otto's answer opening the stage is what calls the peers: they were
     // requested while the PR still waited on otto, so that request called
     // nobody. Whoever GitHub still waits on in the tier is called, and one
