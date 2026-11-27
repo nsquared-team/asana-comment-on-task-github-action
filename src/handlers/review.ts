@@ -102,6 +102,28 @@ export const reviewersToCall = async (event: SyncEvent, reviewers: any[]) => {
   return awaitingOtto(reviews, event.requestedReviewers) ? [] : reviewers;
 };
 
+// Where a pull request stands decides who is asked to review it: open, a
+// Review; merged, the FYI a merge leaves, because nobody is waited on once
+// the code is in; closed without merging, nobody at all.
+export const standingOf = (pullRequest: any) => {
+  if (pullRequest.merged) return "merged";
+  return pullRequest.state === "closed" ? "abandoned" : "open";
+};
+
+// The payload is the pull request as it was when the event fired, and a run
+// can start after the merge or the close that followed it. A payload that
+// says merged is final; anything else is checked against GitHub, read fresh.
+export const standingNow = async (event: SyncEvent) => {
+  if (event.prMerged) return "merged";
+  try {
+    return standingOf((await githubAxios.get(pullRequestUrl(event))).data);
+  } catch (error) {
+    // Losing the read must not stall the sync: the payload's answer stands.
+    console.warn("Failed to read the pull request:", error);
+    return standingOf({ state: event.prState });
+  }
+};
+
 // A "Comment" review from a tier reviewer is a rejection here: they looked
 // and did not approve, so the author answers it and re-requests them, exactly
 // as for changes requested. GitHub files every inline comment as a review of
@@ -383,12 +405,17 @@ const handleApprovalCascade = async (
 
   // A review can land after the merge. Nobody the cascade reaches is being
   // waited on by then, so each gets the FYI a merge leaves instead of a
-  // Review, and the late approval promotes nothing.
+  // Review, and the late approval promotes nothing. One that lands on a pull
+  // request closed without merging calls nobody.
   const { merged, base } = pullRequestResponse.data;
-  const callReviewers = (taskId: string, reviewers: any[]) =>
-    merged
-      ? asana.addFyiReviews(taskId, reviewers, base.ref, event.prUrl)
-      : asana.addRequestedReviews(taskId, reviewers, event.prUrl);
+  const standing = standingOf(pullRequestResponse.data);
+  const callReviewers = async (taskId: string, reviewers: any[]) => {
+    if (standing === "merged") {
+      await asana.addFyiReviews(taskId, reviewers, base.ref, event.prUrl);
+    } else if (standing === "open") {
+      await asana.addRequestedReviews(taskId, reviewers, event.prUrl);
+    }
+  };
 
   // Otto's answer opening the stage is what calls the peers: they were
   // requested while the PR still waited on otto, so that request called
