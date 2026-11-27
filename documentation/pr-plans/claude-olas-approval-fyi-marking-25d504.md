@@ -12,11 +12,11 @@ Risk: every repo running the sync takes this on its next version bump. Only pull
 
 ## Definition of Done
 
-- [ ] On a merged pull request, a review request creates "FYI Review - merged to <base>" for the requested reviewer, carrying the merge's "nobody is waiting on you" note.
-- [ ] That run creates no "Review" or "Blocking Review" subtask, deletes no approval subtask and moves the task to no section.
-- [ ] A reviewer who already holds an approval subtask on the task, in any state, gets no second one.
-- [ ] A review request made before the merge and handled after it takes the FYI path.
-- [ ] On an open pull request a review request creates the same subtasks under the same names and moves the task as before.
-- [ ] The README's review request row says what a request does on a pull request that has already merged.
-- [ ] The new tests fail when the merged check is removed.
-- [ ] No other place in the pull request handler hands out a "Review" on a merged pull request, shown by the search over its call sites.
+- [x] On a merged pull request, a review request creates "FYI Review - merged to <base>" for the requested reviewer, carrying the merge's "nobody is waiting on you" note.
+- [x] That run creates no "Review" or "Blocking Review" subtask, deletes no approval subtask and moves the task to no section.
+- [x] A reviewer who already holds an approval subtask on the task, in any state, gets no second one.
+- [x] A review request made before the merge and handled after it takes the FYI path.
+- [x] On an open pull request a review request creates the same subtasks under the same names and moves the task as before.
+- [x] The README's review request row says what a request does on a pull request that has already merged.
+- [x] The new tests fail when the merged check is removed.
+- [x] No other place in the pull request handler hands out a "Review" on a merged pull request, shown by the search over its call sites.
