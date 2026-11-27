@@ -1,14 +1,14 @@
-# A review request after the merge leaves an FYI, not a Review
+# A pull request that is no longer open never asks for a review
 
 ## Goal
 
-A reviewer requested on a pull request that has already merged finds an FYI review on their Asana board, never a "Review" saying merged code is waiting on them.
+A reviewer never finds a "Review" on their Asana board for a pull request that has merged or been closed: merged work leaves an FYI review, abandoned work leaves nothing.
 
-Focus of this PR: a reviewer requested after the merge gets an FYI review — the pull request handler's review hand-out on a merged pull request only, nothing else.
+Focus of this PR: a closed or merged pull request never asks for a review — the review hand-outs in the pull request, CI and review handlers only, nothing else.
 
-Scope: the pull request handler, where a review request or a ready event hands out reviews. In: on a merged pull request it gives each reviewer it would call the "FYI Review - merged to <base>" subtask, leaves the task in its column and deletes no approval subtask; the README's row; the tests. ⏩ Out: a changes-request or a dismissal after the merge; CI turning green after the merge; restoring subtasks that earlier runs deleted. Shape: four source files (the pull request handler, the review handler that holds the GitHub reads, the tests, the README) plus the rebuilt bundle, about 170 changed lines.
+Scope: every place the sync hands out a "Review" from an event. In: on a merged pull request the pull request handler gives each reviewer it would call the "FYI Review - merged to <base>" subtask, leaves the task in its column and deletes no approval subtask; a reviewer requested after the merge gets that FYI whatever their tier; on a pull request closed without merging the pull request handler, the CI handler and the approval cascade call nobody and move nothing; CI turning green after the merge calls nobody and moves nothing; the README's rows; the tests. ⏩ Out: a changes-request or a dismissal after the merge; a CI verdict turning red after the merge; a late approval promoting a closed pull request's task; restoring subtasks that earlier runs deleted. Shape: five source files (the pull request, CI and review handlers, the tests, the README) plus the rebuilt bundle, about 350 changed lines.
 
-Risk: every repo running the sync takes this on its next version bump. Only pull request events on a merged pull request change; an open pull request takes today's path. Undo: revert the one commit. The load-bearing 1%: the merged check reads the pull request GitHub returns fresh, so a request made before the merge and handled after it takes the FYI path too.
+Risk: every repo running the sync takes this on its next version bump. Only events on a pull request that has merged or closed change; an open pull request takes today's path. Undo: revert the branch's commits. The load-bearing 1%: where the pull request stands is read from GitHub fresh, so an event fired before the merge or the close and handled after it is treated as merged or closed too.
 
 ## Definition of Done
 
@@ -20,3 +20,11 @@ Risk: every repo running the sync takes this on its next version bump. Only pull
 - [x] The README's review request row says what a request does on a pull request that has already merged.
 - [x] The new tests fail when the merged check is removed.
 - [x] No other place in the pull request handler hands out a "Review" on a merged pull request, shown by the search over its call sites.
+- [x] A reviewer outside the active tier who is requested on a merged pull request gets the FYI review.
+- [x] A review request or a ready event handled after a close without a merge creates no approval subtask and moves the task to no section.
+- [x] CI turning green on a pull request that has merged or closed creates no approval subtask and moves the task to no section, and its verdict is still recorded.
+- [x] An approval that lands on a pull request closed without merging hands the next tier no subtask.
+- [x] A pull request GitHub cannot return is handled as its payload describes it.
+- [x] The README's rows for a review request, a CI verdict and an approval say what each does on a pull request that has merged or closed.
+- [x] The tests for these fail against the handlers as they were before this change.
+- [x] No hand-out of a "Review" anywhere in the project runs without the open check, shown by the search over the hand-out's call sites.
