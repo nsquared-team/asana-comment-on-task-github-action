@@ -18558,33 +18558,37 @@ const handleCiStatus = (event) => __awaiter(void 0, void 0, void 0, function* ()
     const activeTier = utils.pickReviewerTier(event.requestedReviewers);
     // Read once, however many tasks the PR is linked to.
     let reviewers;
+    // A CI run outlives the merge or the close that came while it ran. By then
+    // nobody is waited on and the review subtasks are the record of how the PR
+    // ended, so the verdict is recorded and nothing else happens.
     let standing;
+    const stillOpen = () => __awaiter(void 0, void 0, void 0, function* () {
+        if (!standing)
+            standing = yield (0, review_1.standingNow)(event);
+        return standing === "open";
+    });
     for (const taskId of event.taskIds) {
         // The CI verdict subtask completes itself when approved/rejected, so the
         // latest verdict lives on the completed subtask assigned to Otto.
         const ciSubtask = yield asana.getApprovalSubtask(taskId, true, otto);
         if (ciSubtask) {
-            // CI recovered: red -> green. Only a ready PR re-enters review, and
-            // only while it is open: a CI run outlives the merge or the close that
-            // came while it ran, and by then nobody is waited on.
+            // CI recovered: red -> green. Only a ready PR re-enters review.
             if (ciSubtask.approval_status === "rejected" &&
                 event.ciStatus === "approved" &&
-                !event.isDraft) {
-                if (!standing)
-                    standing = yield (0, review_1.standingNow)(event);
-                if (standing === "open") {
-                    yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, [
-                        SECTIONS.APPROVED,
-                        ...SECTIONS.RELEASED_SECTIONS,
-                    ]);
-                    if (!reviewers)
-                        reviewers = yield (0, review_1.reviewersToCall)(event, activeTier);
-                    yield asana.addRequestedReviews(taskId, reviewers, event.prUrl);
-                }
+                !event.isDraft &&
+                (yield stillOpen())) {
+                yield asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, [
+                    SECTIONS.APPROVED,
+                    ...SECTIONS.RELEASED_SECTIONS,
+                ]);
+                if (!reviewers)
+                    reviewers = yield (0, review_1.reviewersToCall)(event, activeTier);
+                yield asana.addRequestedReviews(taskId, reviewers, event.prUrl);
             }
             // CI broke: green -> red. Review requests are stale; task goes back.
             if (ciSubtask.approval_status === "approved" &&
-                event.ciStatus === "rejected") {
+                event.ciStatus === "rejected" &&
+                (yield stillOpen())) {
                 yield asana.deleteReviewSubtasks(taskId);
                 yield asana.moveTaskToSection(taskId, SECTIONS.NEXT, SECTIONS.PROTECTED_FROM_DEMOTION);
             }
@@ -18596,7 +18600,7 @@ const handleCiStatus = (event) => __awaiter(void 0, void 0, void 0, function* ()
             continue;
         }
         // First CI verdict for this task.
-        if (event.ciStatus === "rejected") {
+        if (event.ciStatus === "rejected" && (yield stillOpen())) {
             yield asana.deleteReviewSubtasks(taskId);
             yield asana.moveTaskToSection(taskId, SECTIONS.NEXT, SECTIONS.PROTECTED_FROM_DEMOTION);
         }

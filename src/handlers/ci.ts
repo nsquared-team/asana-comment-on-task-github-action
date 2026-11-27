@@ -58,7 +58,14 @@ export const handleCiStatus = async (event: SyncEvent) => {
   const activeTier = utils.pickReviewerTier(event.requestedReviewers);
   // Read once, however many tasks the PR is linked to.
   let reviewers: any[] | undefined;
+  // A CI run outlives the merge or the close that came while it ran. By then
+  // nobody is waited on and the review subtasks are the record of how the PR
+  // ended, so the verdict is recorded and nothing else happens.
   let standing: string | undefined;
+  const stillOpen = async () => {
+    if (!standing) standing = await standingNow(event);
+    return standing === "open";
+  };
 
   for (const taskId of event.taskIds) {
     // The CI verdict subtask completes itself when approved/rejected, so the
@@ -66,29 +73,26 @@ export const handleCiStatus = async (event: SyncEvent) => {
     const ciSubtask = await asana.getApprovalSubtask(taskId, true, otto);
 
     if (ciSubtask) {
-      // CI recovered: red -> green. Only a ready PR re-enters review, and
-      // only while it is open: a CI run outlives the merge or the close that
-      // came while it ran, and by then nobody is waited on.
+      // CI recovered: red -> green. Only a ready PR re-enters review.
       if (
         ciSubtask.approval_status === "rejected" &&
         event.ciStatus === "approved" &&
-        !event.isDraft
+        !event.isDraft &&
+        (await stillOpen())
       ) {
-        if (!standing) standing = await standingNow(event);
-        if (standing === "open") {
-          await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, [
-            SECTIONS.APPROVED,
-            ...SECTIONS.RELEASED_SECTIONS,
-          ]);
-          if (!reviewers) reviewers = await reviewersToCall(event, activeTier);
-          await asana.addRequestedReviews(taskId, reviewers, event.prUrl);
-        }
+        await asana.moveTaskToSection(taskId, SECTIONS.TESTING_REVIEW, [
+          SECTIONS.APPROVED,
+          ...SECTIONS.RELEASED_SECTIONS,
+        ]);
+        if (!reviewers) reviewers = await reviewersToCall(event, activeTier);
+        await asana.addRequestedReviews(taskId, reviewers, event.prUrl);
       }
 
       // CI broke: green -> red. Review requests are stale; task goes back.
       if (
         ciSubtask.approval_status === "approved" &&
-        event.ciStatus === "rejected"
+        event.ciStatus === "rejected" &&
+        (await stillOpen())
       ) {
         await asana.deleteReviewSubtasks(taskId);
         await asana.moveTaskToSection(
@@ -107,7 +111,7 @@ export const handleCiStatus = async (event: SyncEvent) => {
     }
 
     // First CI verdict for this task.
-    if (event.ciStatus === "rejected") {
+    if (event.ciStatus === "rejected" && (await stillOpen())) {
       await asana.deleteReviewSubtasks(taskId);
       await asana.moveTaskToSection(
         taskId,

@@ -1674,6 +1674,103 @@ describe("a pull request closed without merging asks nobody for a review", () =>
   });
 });
 
+describe("a red CI verdict on a pull request that is no longer open is only recorded", () => {
+  const approval = (overrides: any) => ({
+    resource_subtype: "approval",
+    completed: false,
+    created_by: { gid: OTTO_ASANA_ID },
+    ...overrides,
+  });
+  const fyiReview = approval({
+    gid: "peer-fyi",
+    name: "FYI Review - merged to sub-PR",
+    assignee: { gid: PEER.asanaId },
+  });
+  const greenCiSubtask = approval({
+    gid: "ci-1",
+    name: "Automated CI Testing",
+    approval_status: "approved",
+    completed: true,
+    assignee: { gid: OTTO_ASANA_ID },
+  });
+
+  const mockGithub = (pullRequest: any) =>
+    githubGet.mockImplementation((url: string) =>
+      Promise.resolve({ data: url.includes("/reviews") ? [] : pullRequest })
+    );
+
+  const redVerdict = () =>
+    handleCiStatus(
+      baseEvent({
+        action: "synchronize",
+        ciStatus: "rejected",
+        prBaseRef: "feature-root",
+        requestedReviewers: [PEER],
+      })
+    );
+
+  const sectionMoves = () =>
+    asanaPost.mock.calls.filter(([url]: [string]) => url.includes("/addTask"));
+
+  test.each([
+    ["merged", { state: "closed", merged: true }],
+    ["closed without merging", { state: "closed", merged: false }],
+  ])(
+    "green to red on a pull request %s deletes no subtask and moves nothing",
+    async (_standing, pullRequest) => {
+      mockAsana({
+        taskSection: "Testing / Review",
+        subtasks: [greenCiSubtask, fyiReview],
+      });
+      mockGithub(pullRequest);
+      await redVerdict();
+      expect(asanaDelete).not.toHaveBeenCalled();
+      expect(sectionMoves()).toHaveLength(0);
+      expect(asanaPut).toHaveBeenCalledWith(
+        "/tasks/ci-1",
+        expect.objectContaining({
+          data: expect.objectContaining({ approval_status: "rejected" }),
+        })
+      );
+    }
+  );
+
+  test("a first verdict that is red after the merge deletes no subtask and moves nothing", async () => {
+    mockAsana({ taskSection: "Testing / Review", subtasks: [fyiReview] });
+    mockGithub({ state: "closed", merged: true });
+    await redVerdict();
+    expect(asanaDelete).not.toHaveBeenCalled();
+    expect(sectionMoves()).toHaveLength(0);
+    expect(asanaPost).toHaveBeenCalledWith(
+      "/tasks/111/subtasks",
+      expect.objectContaining({
+        data: expect.objectContaining({
+          name: "Automated CI Testing",
+          approval_status: "rejected",
+        }),
+      })
+    );
+  });
+
+  test("the same red verdict on an open pull request still clears the reviews and demotes the task", async () => {
+    mockAsana({
+      taskSection: "Testing / Review",
+      subtasks: [
+        greenCiSubtask,
+        approval({
+          gid: "peer-review",
+          name: "Review",
+          assignee: { gid: PEER.asanaId },
+        }),
+      ],
+    });
+    mockGithub({ state: "open", merged: false });
+    await redVerdict();
+    expect(asanaDelete).toHaveBeenCalledWith("/tasks/peer-review");
+    expect(movesTo("Next")).toHaveLength(1);
+  });
+});
+
 describe("a merge turns the open reviews into FYI reviews", () => {
   const approvalSubtask = (overrides: any) => ({
     resource_subtype: "approval",
